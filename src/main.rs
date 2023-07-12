@@ -1,14 +1,21 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+	path::PathBuf,
+	sync::Arc,
+};
 
 use futures::future;
+use rand::{seq::IteratorRandom, thread_rng};
+use rustls::server::AllowAnyAuthenticatedClient;
 use structopt::StructOpt;
-use tokio::io::AsyncWriteExt;
+use tokio::{io::AsyncWriteExt, net::lookup_host};
 use tracing::{error, info};
 
 use h3_quinn::quinn;
 
 mod config;
-use crate::config::Config;
+mod utils;
+use crate::config::PeerMode;
 
 static ALPN: &[u8] = b"h3";
 
@@ -36,79 +43,117 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// parse args, read config
 
 	let opt = Opt::from_args();
-	let config: Config = toml::from_str(&tokio::fs::read_to_string(opt.config).await?)?;
+	let config: config::Config = toml::from_str(&tokio::fs::read_to_string(opt.config).await?)?;
+	let general = config.general;
 
-	// DNS lookup
+	// load TLS certificates / keys
 
-	let uri = opt.uri.parse::<http::Uri>()?;
-
-	if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
-		Err("uri scheme must be 'https'")?;
-	}
-
-	let auth = uri.authority().ok_or("uri must have a host")?.clone();
-
-	let port = auth.port_u16().unwrap_or(443);
-
-	let addr = tokio::net::lookup_host((auth.host(), port))
-		.await?
-		.next()
-		.ok_or("dns found no addresses")?;
-
-	info!("DNS lookup for {:?}: {:?}", uri, addr);
-
-	// create quinn client endpoint
-
-	// load CA certificates stored in the system
-	let mut roots = rustls::RootCertStore::empty();
-	match rustls_native_certs::load_native_certs() {
-		Ok(certs) => {
-			for cert in certs {
-				if let Err(e) = roots.add(&rustls::Certificate(cert.0)) {
-					error!("failed to parse trust anchor: {}", e);
-				}
-			}
+	let roots = {
+		let mut roots = rustls::RootCertStore::empty();
+		let certs = match config.tls.ca {
+			Some(path) => crate::utils::load_certificates_from_pem(&path)?,
+			None => rustls_native_certs::load_native_certs()?
+				.into_iter()
+				.map(|c| rustls::Certificate(c.0))
+				.collect(),
+		};
+		for cert in certs {
+			roots.add(&cert)?;
 		}
-		Err(e) => {
-			error!("couldn't load any default trust roots: {}", e);
-		}
+		roots
 	};
 
-	// load certificate of CA who issues the server certificate
-	// NOTE that this should be used for dev only
-	if let Err(e) = roots.add(&rustls::Certificate(std::fs::read(opt.ca)?)) {
-		error!("failed to parse trust anchor: {}", e);
-	}
+	let cert = crate::utils::load_certificates_from_pem(&config.tls.cert)?;
+	let key = crate::utils::load_private_key_from_file(&config.tls.key)?;
 
-	let mut tls_config = rustls::ClientConfig::builder()
-		.with_safe_default_cipher_suites()
-		.with_safe_default_kx_groups()
-		.with_protocol_versions(&[&rustls::version::TLS13])?
-		.with_root_certificates(roots)
-		.with_no_client_auth();
+	// prepare QUIC config
 
-	tls_config.enable_early_data = true;
-	tls_config.alpn_protocols = vec![ALPN.into()];
+	let transport_config = Arc::new(crate::utils::build_transport_config(&config.transport)?);
 
-	tls_config.key_log = Arc::new(rustls::KeyLogFile::new());
+	let client_config = {
+		let mut tls_config = rustls::ClientConfig::builder()
+			.with_safe_default_cipher_suites()
+			.with_safe_default_kx_groups()
+			.with_protocol_versions(&[&rustls::version::TLS13])?
+			.with_root_certificates(roots.clone())
+			.with_client_auth_cert(cert.clone(), key.clone())?;
+		tls_config.enable_early_data = true;
+		tls_config.alpn_protocols = vec![ALPN.into()];
+		tls_config.key_log = Arc::new(rustls::KeyLogFile::new());
 
-	let mut client_endpoint = h3_quinn::quinn::Endpoint::client("[::]:0".parse().unwrap())?;
+		let mut config = quinn::ClientConfig::new(Arc::new(tls_config));
+		config.transport_config(transport_config.clone());
+		config
+	};
 
-	let client_config = quinn::ClientConfig::new(Arc::new(tls_config));
-	client_endpoint.set_default_client_config(client_config);
+	let server_config = {
+		let cert_verifier = Arc::new(crate::utils::StrictClientCertVerifier {
+			inner: AllowAnyAuthenticatedClient::new(roots.clone()),
+			server_name: general.hostname.as_str().try_into()?,
+		});
+		let mut tls_config = rustls::ServerConfig::builder()
+			.with_safe_default_cipher_suites()
+			.with_safe_default_kx_groups()
+			.with_protocol_versions(&[&rustls::version::TLS13])?
+			.with_client_cert_verifier(cert_verifier)
+			.with_single_cert(cert.clone(), key.clone())?;
+		tls_config.max_early_data_size = u32::MAX;
+		tls_config.alpn_protocols = vec![ALPN.into()];
+		tls_config.key_log = Arc::new(rustls::KeyLogFile::new());
 
-	let conn = client_endpoint.connect(addr, auth.host())?.await?;
+		let mut config = quinn::ServerConfig::with_crypto(Arc::new(tls_config));
+		config.transport_config(transport_config.clone());
+		config.migration(true);
+		config.use_retry(false);
+		config
+	};
 
-	info!("QUIC connection established");
+	// prepare addresses
 
-	// create h3 client
+	// (not resolved yet, we'll do that each connection attempt)
+	let client_addr = (
+		general
+			.http_connect_address
+			.unwrap_or(general.hostname.clone()),
+		general.quic_port,
+	);
 
-	// h3 is designed to work with different QUIC implementations via
-	// a generic interface, that is, the [`quic::Connection`] trait.
-	// h3_quinn implements the trait w/ quinn to make it work with h3.
-	let quinn_conn = h3_quinn::Connection::new(conn);
+	let endpoint_addr = SocketAddr::new(
+		match general.bind_address {
+			Some(addr) => addr.parse()?,
+			None => IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0)),
+		},
+		match general.mode {
+			PeerMode::Client => 0,
+			PeerMode::Server => general.quic_port,
+		},
+	);
 
-	let (mut driver, mut send_request) = h3::client::new(quinn_conn).await?;
+	// start QUIC endpoint
+
+	let endpoint = match general.mode {
+		PeerMode::Client => {
+			let mut endpoint = quinn::Endpoint::client(endpoint_addr)?;
+			endpoint.set_default_client_config(client_config);
+			endpoint
+		}
+		PeerMode::Server => quinn::Endpoint::server(server_config, endpoint_addr)?,
+	};
+
+	// main body
+
+	// resolve destination
+	let addr = lookup_host(client_addr)
+		.await?
+		.choose(&mut thread_rng())
+		.ok_or("resolution found no addresses")?;
+
+	// attempt to establish QUIC connection
+	let quinn_connection = endpoint.connect(addr, &general.hostname)?.await?;
+
+	// create HTTP/3 connection
+	let h3_connection = h3_quinn::Connection::new(quinn_connection);
+	let (mut driver, mut send_request) = h3::client::new(h3_connection).await?;
 
 	let drive = async move {
 		future::poll_fn(|cx| driver.poll_close(cx)).await?;
