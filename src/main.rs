@@ -7,24 +7,21 @@ use tracing::{error, info};
 
 use h3_quinn::quinn;
 
+mod config;
+use crate::config::Config;
+
 static ALPN: &[u8] = b"h3";
 
 #[derive(StructOpt, Debug)]
-#[structopt(name = "server")]
+#[structopt(name = "ptproxy")]
 struct Opt {
 	#[structopt(
 		long,
 		short,
-		default_value = "examples/ca.cert",
-		help = "Certificate of CA who issues the server certificate"
+		default_value = "/etc/ptproxy/config.toml",
+		help = "Path to configuration file"
 	)]
-	pub ca: PathBuf,
-
-	#[structopt(name = "keylogfile", long)]
-	pub key_log_file: bool,
-
-	#[structopt()]
-	pub uri: String,
+	pub config: PathBuf,
 }
 
 #[tokio::main]
@@ -36,7 +33,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		.with_max_level(tracing::Level::INFO)
 		.init();
 
+	// parse args, read config
+
 	let opt = Opt::from_args();
+	let config: Config = toml::from_str(&tokio::fs::read_to_string(opt.config).await?)?;
 
 	// DNS lookup
 
@@ -90,12 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	tls_config.enable_early_data = true;
 	tls_config.alpn_protocols = vec![ALPN.into()];
 
-	// optional debugging support
-	if opt.key_log_file {
-		// Write all Keys to a file if SSLKEYLOGFILE is set
-		// WARNING, we enable this for the example, you should think carefully about enabling in your own code
-		tls_config.key_log = Arc::new(rustls::KeyLogFile::new());
-	}
+	tls_config.key_log = Arc::new(rustls::KeyLogFile::new());
 
 	let mut client_endpoint = h3_quinn::quinn::Endpoint::client("[::]:0".parse().unwrap())?;
 
