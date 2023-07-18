@@ -134,6 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// start QUIC endpoint
 
 	let socket = std::net::UdpSocket::bind(endpoint_addr)?;
+	crate::utils::configure_endpoint_socket(&socket, &config.transport);
 
 	let endpoint = {
 		let mut endpoint = quinn::Endpoint::new(

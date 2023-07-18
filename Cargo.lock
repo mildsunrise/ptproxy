@@ -610,6 +610,7 @@ dependencies = [
  "rustls-native-certs",
  "rustls-pemfile",
  "serde",
+ "socket2 0.5.3",
  "structopt",
  "tokio",
  "toml",

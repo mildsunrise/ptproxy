@@ -114,3 +114,17 @@ fn set_congestion_controller(
 		)),
 	};
 }
+
+pub fn configure_endpoint_socket(
+	std_socket: &std::net::UdpSocket,
+	config: &config::TransportConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+	let socket = socket2::SockRef::from(&std_socket);
+	if let Some(value) = config.socket_receive_buffer_size {
+		socket.set_recv_buffer_size(value)?;
+	}
+	if let Some(value) = config.socket_send_buffer_size {
+		socket.set_send_buffer_size(value)?;
+	}
+	Ok(())
+}

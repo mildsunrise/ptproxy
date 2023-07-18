@@ -134,6 +134,16 @@ pub struct TransportConfig {
 	/// **Default:** `initial_window`
 	pub send_window: Option<u64>,
 
+	/// **OS network:** Size of the OS's receive buffer for the UDP socket (`SO_RCVBUF` option), in bytes.
+	/// See [`socket2::Socket::set_recv_buffer_size`].
+	/// **Default:** OS default
+	pub socket_receive_buffer_size: Option<usize>,
+
+	/// **OS network:** Size of the OS's send buffer for the UDP socket (`SO_SNDBUF` option), in bytes.
+	/// See [`socket2::Socket::set_send_buffer_size`].
+	/// **Default:** OS default
+	pub socket_send_buffer_size: Option<usize>,
+
 	/// **Congestion control:** Algorithm to use for the congestion controller.
 	/// **Default:** Cubic
 	#[serde(default)]
