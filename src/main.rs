@@ -68,6 +68,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// prepare QUIC config
 
+	let endpoint_config = quinn::EndpointConfig::default();
+
 	let transport_config = Arc::new(crate::utils::build_transport_config(general.mode, &config.transport)?);
 
 	let client_config = {
@@ -131,13 +133,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// start QUIC endpoint
 
-	let endpoint = match general.mode {
-		PeerMode::Client => {
-			let mut endpoint = quinn::Endpoint::client(endpoint_addr)?;
+	let socket = std::net::UdpSocket::bind(endpoint_addr)?;
+
+	let endpoint = {
+		let mut endpoint = quinn::Endpoint::new(
+			endpoint_config,
+			(general.mode == PeerMode::Server).then_some(server_config),
+			socket,
+			Arc::new(quinn::TokioRuntime),
+		)?;
+		if general.mode == PeerMode::Client {
 			endpoint.set_default_client_config(client_config);
-			endpoint
 		}
-		PeerMode::Server => quinn::Endpoint::server(server_config, endpoint_addr)?,
+		endpoint
 	};
 
 	// main body

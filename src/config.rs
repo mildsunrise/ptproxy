@@ -51,7 +51,7 @@ pub struct GeneralConfig {
 	pub http_connect_address: Option<String>,
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerMode {
 	Client,
 	Server,
@@ -140,7 +140,7 @@ pub struct TransportConfig {
 	pub congestion_algorithm: CongestionAlgorithm,
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CongestionAlgorithm {
 	/// See [`quinn::congestion::Bbr`].
 	Bbr,
