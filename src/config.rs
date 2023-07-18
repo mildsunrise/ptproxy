@@ -51,7 +51,7 @@ pub struct GeneralConfig {
 	pub http_connect_address: Option<String>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone, Copy)]
 pub enum PeerMode {
 	Client,
 	Server,
@@ -86,9 +86,9 @@ pub struct TlsConfig {
 /// These parameters are usually kept identical on both sides.
 #[derive(Deserialize, Debug, Default)]
 pub struct TransportConfig {
-	/// Time to wait since last connection attempt (or death of connection) before attempting a new connection, in milliseconds.
+	/// **Application:** Time to wait since last connection [attempt] failed before attempting a new connection, in milliseconds.
 	/// Only used in client mode.
-	/// **Default:** 2000
+	/// **Default:** 1000
 	pub connect_interval: Option<u64>,
 
 	/// Maximum duration of inactivity to accept before considering the connection dead, in milliseconds.
@@ -109,18 +109,38 @@ pub struct TransportConfig {
 	/// **Default:** see quinn documentation (spec default)
 	pub initial_rtt: Option<u64>,
 
-	/// Size of the initial congestion window, in bytes.
+	/// **Flow control:** Maximum number of HTTP streams (requests) that may be open concurrently at any point in time.
+	/// [`quinn::TransportConfig::max_concurrent_bidi_streams`] is set to this value (for servers) or to zero (for clients).
+	/// **Default:** 100
+	pub max_concurrent_http_streams: Option<u32>,
+
+	/// **Flow control:** Maximum data the peer may transmit without acknowledgement on any one stream before becoming blocked, in bytes.
+	/// See [`quinn::TransportConfig::stream_receive_window`].
+	/// **Default:** 1MB
+	pub stream_receive_window: Option<u64>,
+
+	/// **Congestion control:** Size of the initial congestion window, in bytes.
 	/// See [`quinn::congestion::CubicConfig::initial_window`].
 	/// **Default:** 14720 (spec default)
 	pub initial_window: Option<u64>,
 
-	/// Algorithm to use for the congestion controller.
+	/// **Flow control:** Maximum data the peer may transmit across all streams of a connection before becoming blocked, in bytes.
+	/// See [`quinn::TransportConfig::receive_window`].
+	/// **Default:** `initial_window`
+	pub receive_window: Option<u64>,
+
+	/// **Flow control:** Maximum data to transmit to a peer without acknowledgment, in bytes.
+	/// See [`quinn::TransportConfig::send_window`].
+	/// **Default:** `initial_window`
+	pub send_window: Option<u64>,
+
+	/// **Congestion control:** Algorithm to use for the congestion controller.
 	/// **Default:** Cubic
 	#[serde(default)]
 	pub congestion_algorithm: CongestionAlgorithm,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone, Copy)]
 pub enum CongestionAlgorithm {
 	/// See [`quinn::congestion::Bbr`].
 	Bbr,
@@ -137,7 +157,7 @@ impl Default for CongestionAlgorithm {
 }
 
 pub fn default_connect_interval() -> u64 {
-	2000
+	1000
 }
 
 pub fn default_max_idle_timeout() -> u64 {
@@ -146,4 +166,12 @@ pub fn default_max_idle_timeout() -> u64 {
 
 pub fn default_keep_alive_interval() -> u64 {
 	2000
+}
+
+pub fn default_max_concurrent_http_streams() -> u32 {
+	100
+}
+
+pub fn default_stream_receive_window() -> u64 {
+	1_000_000
 }

@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// prepare QUIC config
 
-	let transport_config = Arc::new(crate::utils::build_transport_config(&config.transport)?);
+	let transport_config = Arc::new(crate::utils::build_transport_config(general.mode, &config.transport)?);
 
 	let client_config = {
 		let mut tls_config = rustls::ClientConfig::builder()
