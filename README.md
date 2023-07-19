@@ -14,7 +14,7 @@ HTTP/1.1 has become the *lingua franca* for communication among microservices du
 
  - **Insecure:** links that cross untrusted boundaries, such as the public internet, may require requests to travel encrypted and authenticated against MITMs.
 
- - **Unstability:** the link may not have a known or guaranteed bandwidth, may be jittery or lossy, or may be subject to occasional or frequent congestion.
+ - **Unstable:** the link may not have a known or guaranteed bandwidth, may be jittery or lossy, or may be subject to occasional or frequent congestion.
 
  - **Low bandwidth / transfer:** the link may be transfer-billed or have low bandwidth, benefitting from transport efficiency.
 
@@ -46,16 +46,18 @@ Most reverse proxies don't support the described usecase (a point-to-point link)
 
  - Support for HTTP/3 is also lacking in general, and even when the proxy supports it, it may not offer it as option for upstream requests (which is what we need here).
 
- - Configuration for this usecase isn't intuitive and could have pitfalls (nginx for example does not validate upstream's certificate by default, supports compressing responses but not requests...).
+ - Configuration for this usecase is unintuitive and could have pitfalls (nginx for example does not validate upstream's certificate by default, supports compressing responses but not requests, doesn't enable TCP keepalive by default, needs clearing the `Connection` header for keepalive to be actually in place, needs a set of identically named directives on different modules to be added to both ends...).
+
+ - The HTTP session isn't established until the first request(s) arrive, incurring additional latency for those. Also for nginx, the session isn't kept alive forever but for a default of 1h (it could be made to be infinite by touching several settings in both ends, but this isn't recommended because of the design of the server).
 
 ## What's this again?
 
-ptproxy is a reverse proxy designed specifically for the use case of point-to-point links. It's meant to be portable, offer good control over the transport, easy to set up in both ends and relatively lightweight (though throughput isn't the priority). In the future it could support niche features such as reporting metrics over established session, sessions against different servers, multiplexing different endpoints over the same session, ACLs...
+ptproxy is a reverse proxy designed specifically for the use case of point-to-point links. It's meant to be portable, offer good control over the transport, easy to set up in both ends and relatively lightweight (though throughput isn't the priority). In the future it could support niche features such as reporting metrics of the established session, sessions against different servers, multiplexing different endpoints over the same session, ACLs...
 
-Right now ptproxy only supports HTTP/3 as transport across instances. In addition to the transport improvements mentioned above, being userspace-based gives us better control over all tweaks independently of the OS.
+Right now ptproxy only supports HTTP/3 as transport across instances. In addition to the transport improvements mentioned above, being userspace-based gives us better control over all tweaks independently of the OS. An important downside is that offload optimizations (both in kernel, hypervisors and routers) are much more developed around TCP than UDP.
 
 ptproxy is written in Rust for:
 
- - **Portability:** HTTP/3 support in mainland distros is a mess thanks to OpenSSL, and Rust avoids dependency on system libraries altogether.
+ - **Portability:** HTTP/3 support is a mess in mainland Linux distros thanks to OpenSSL, and Rust avoids dependency on system libraries altogether. It also has much better crossplatform support.
 
  - **Control:** Rust's HTTP/3 ecosystem offers much more control, with most components allowing dependency injection, meaning internal knobs are less likely to be left unexposed. The stack is fully async and even compatible with custom event loops, should we need them in the future.
