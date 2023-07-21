@@ -1,14 +1,36 @@
-use std::{sync::Arc, time::Duration, path::Path, error::Error, pin::Pin};
+use std::{sync::Arc, time::Duration, path::Path, error::Error, pin::Pin, future::Future};
 
 use futures::{future::poll_fn, Stream};
+use tokio_util::sync::CancellationToken;
 
 use crate::config;
 
 // async utils
 
-/// returns a future that polls an Unpin stream, discarding all items, until it terminates.
+/// a future that polls an Unpin stream, discarding all items, until it terminates.
 pub async fn drain_stream<S: Stream + Unpin>(stream: &mut S) {
 	while let Some(_) = poll_fn(|cx| Pin::new(&mut *stream).poll_next(cx)).await {};
+}
+
+/// a future that resolves when 'a' does, but also drives 'b' in the meantime.
+/// in case 'b' ends first, its result is discarded and it keeps polling 'a' only.
+pub async fn with_background<A: Future, B: Future>(a: A, b: B) -> A::Output {
+	tokio::select! {
+		x = a => x,
+		true = async {
+			b.await;
+			false // prevent branch from matching
+		} => unreachable!(),
+	}
+}
+
+/// a future that resolves with Some(_) if 'a' resolves,
+/// and resolves with None if the CancellationToken is cancelled first.
+pub async fn cancellable<F: Future>(a: F, token: &CancellationToken) -> Option<F::Output> {
+	tokio::select! {
+		x = a => Some(x),
+		() = token.cancelled() => None,
+	}
 }
 
 // TLS stuff

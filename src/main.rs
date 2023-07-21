@@ -29,7 +29,7 @@ use h3_quinn::quinn;
 mod config;
 mod utils;
 use crate::config::PeerMode;
-use crate::utils::drain_stream;
+use crate::utils::{cancellable, drain_stream, with_background};
 
 static ALPN: &[u8] = b"h3";
 
@@ -258,17 +258,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		let mut have_closed = false;
 
 		// wait for connection end, while listening for a shutdown signal
-		select! {
-			true = async {
-				stop_token.cancelled().await;
-				if ! have_closed {
-					have_closed = true;
-					state_guard.0.write().unwrap().as_mut().unwrap().send_request = None;
-				}
-				false // won't match the branch pattern
-			} => unreachable!(),
-			value = driver.wait_idle() => value,
-		}?;
+		with_background(driver.wait_idle(), async {
+			stop_token.cancelled().await;
+			if !have_closed {
+				have_closed = true;
+				state_guard.0.write().unwrap().as_mut().unwrap().send_request = None;
+			}
+		})
+		.await?;
 
 		// if connection ended gracefully, check if it was due to us closing, or if it was the server
 		// in the latter case, this is an error condition for us and we must report + reconnect if needed
@@ -391,14 +388,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		loop {
 			// wait for a connection attempt to arrive, unless shutdown
 			// (in the meantime drive the existing connections, if any)
-			let connecting: quinn::Connecting = select! {
-				() = stop_token.cancelled() => break,
-				value = endpoint.accept() => value,
-				true = async {
-					drain_stream(&mut connections).await;
-					false // won't match the branch pattern
-				} => unreachable!(),
-			}.unwrap();
+			let accept_future = with_background(
+				cancellable(endpoint.accept(), &stop_token),
+				drain_stream(&mut connections),
+			);
+			let connecting = match accept_future.await {
+				None => break, // shutdown: stop accepting connections
+				Some(new_conn) => new_conn.unwrap(),
+			};
 
 			// use spawn_local (i.e. run the handlers in our same thread) because ptproxy
 			// is meant to be a point-to-point proxy and so there will usually be a
