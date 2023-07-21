@@ -51,7 +51,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	// parse args, read config
 
 	let opt = Opt::from_args();
-	let config: config::Config = toml::from_str(&tokio::fs::read_to_string(opt.config).await?)?;
+	let config: config::Config = toml::from_str(&tokio::fs::read_to_string(opt.config.clone()).await?)?;
+	let config_base = opt.config.parent().unwrap();
 	let general = config.general;
 	let connect_interval = Duration::from_millis(
 		config
@@ -65,7 +66,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	let roots = {
 		let mut roots = rustls::RootCertStore::empty();
 		let certs = match config.tls.ca {
-			Some(path) => crate::utils::load_certificates_from_pem(&path)?,
+			Some(path) =>
+				crate::utils::load_certificates_from_pem(&config_base.join(path))?,
 			None => rustls_native_certs::load_native_certs()?
 				.into_iter()
 				.map(|c| rustls::Certificate(c.0))
@@ -77,8 +79,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		roots
 	};
 
-	let cert = crate::utils::load_certificates_from_pem(&config.tls.cert)?;
-	let key = crate::utils::load_private_key_from_file(&config.tls.key)?;
+	let cert = crate::utils::load_certificates_from_pem(&config_base.join(config.tls.cert))?;
+	let key = crate::utils::load_private_key_from_file(&config_base.join(config.tls.key))?;
 
 	// prepare QUIC config
 
