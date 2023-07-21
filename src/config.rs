@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::{path::PathBuf, net::{SocketAddr, IpAddr}};
+use std::path::PathBuf;
 
 /// Root configuration for ptproxy.
 #[derive(Deserialize, Debug)]
@@ -59,6 +59,10 @@ pub enum PeerMode {
 
 fn default_quic_port() -> u16 {
 	20010
+}
+
+pub fn default_http_bind_address() -> &'static str {
+	"[::1]:20080"
 }
 
 /// TLS identity settings for the QUIC endpoint.

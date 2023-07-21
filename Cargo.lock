@@ -599,7 +599,6 @@ name = "ptproxy"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "futures",
  "h3",
  "h3-quinn",
  "http",
@@ -613,6 +612,7 @@ dependencies = [
  "socket2 0.5.3",
  "structopt",
  "tokio",
+ "tokio-util",
  "toml",
  "tracing",
  "tracing-subscriber",

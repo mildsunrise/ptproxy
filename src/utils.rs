@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration, path::Path};
+use std::{sync::Arc, time::Duration, path::Path, error::Error};
 
 use crate::config;
 
@@ -36,7 +36,7 @@ pub fn load_certificates_from_pem(path: &Path) -> std::io::Result<Vec<rustls::Ce
 }
 
 // copied from rustls::PrivateKey
-pub fn load_private_key_from_file(path: &Path) -> Result<rustls::PrivateKey, Box<dyn std::error::Error>> {
+pub fn load_private_key_from_file(path: &Path) -> Result<rustls::PrivateKey, Box<dyn Error>> {
 	let file = std::fs::File::open(path)?;
 	let mut reader = std::io::BufReader::new(file);
 	let mut keys = rustls_pemfile::pkcs8_private_keys(&mut reader)?;
@@ -53,7 +53,7 @@ pub fn load_private_key_from_file(path: &Path) -> Result<rustls::PrivateKey, Box
 pub fn build_transport_config(
 	mode: config::PeerMode,
 	original: &config::TransportConfig,
-) -> Result<quinn::TransportConfig, Box<dyn std::error::Error>> {
+) -> Result<quinn::TransportConfig, Box<dyn Error>> {
 	let keep_alive_interval = Duration::from_millis(
 		original
 			.keep_alive_interval
@@ -118,7 +118,7 @@ fn set_congestion_controller(
 pub fn configure_endpoint_socket(
 	std_socket: &std::net::UdpSocket,
 	config: &config::TransportConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn Error>> {
 	let socket = socket2::SockRef::from(&std_socket);
 	if let Some(value) = config.socket_receive_buffer_size {
 		socket.set_recv_buffer_size(value)?;

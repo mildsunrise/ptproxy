@@ -1,14 +1,22 @@
+// FIXME: use async in closures, into_err
+
 use std::{
+	convert::identity as id,
+	error::Error,
 	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
 	path::PathBuf,
-	sync::Arc,
+	sync::{
+		atomic::{AtomicBool, Ordering},
+		Arc,
+	},
+	time::Duration,
 };
 
 use futures::future;
 use rand::{seq::IteratorRandom, thread_rng};
 use rustls::server::AllowAnyAuthenticatedClient;
 use structopt::StructOpt;
-use tokio::{io::AsyncWriteExt, net::lookup_host};
+use tokio::{io::AsyncWriteExt, net::lookup_host, time::sleep};
 use tracing::{error, info};
 
 use h3_quinn::quinn;
@@ -32,7 +40,7 @@ struct Opt {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
 	tracing_subscriber::fmt()
 		.with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
 		.with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
@@ -45,6 +53,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let opt = Opt::from_args();
 	let config: config::Config = toml::from_str(&tokio::fs::read_to_string(opt.config).await?)?;
 	let general = config.general;
+	let connect_interval = Duration::from_millis(
+		config
+			.transport
+			.connect_interval
+			.unwrap_or(config::default_connect_interval()),
+	);
 
 	// load TLS certificates / keys
 
@@ -116,6 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let client_addr = (
 		general
 			.http_connect_address
+			.clone()
 			.unwrap_or(general.hostname.clone()),
 		general.quic_port,
 	);
@@ -131,10 +146,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		},
 	);
 
+	if general.mode != PeerMode::Client && general.http_bind_address.is_some() {
+		Err("http_bind_address can only be present in client mode")?
+	}
+	if general.mode != PeerMode::Server && general.http_connect_address.is_some() {
+		Err("http_connect_address can only be present in server mode")?
+	}
+	if general.mode == PeerMode::Server && general.http_connect_address.is_none() {
+		Err("http_connect_address must be present in server mode")?
+	}
+
+	let listener_addr = general
+		.http_bind_address
+		.clone()
+		.unwrap_or(config::default_http_bind_address().into())
+		.parse::<SocketAddr>()?;
+
 	// start QUIC endpoint
 
 	let socket = std::net::UdpSocket::bind(endpoint_addr)?;
-	crate::utils::configure_endpoint_socket(&socket, &config.transport);
+	crate::utils::configure_endpoint_socket(&socket, &config.transport)?;
 
 	let endpoint = {
 		let mut endpoint = quinn::Endpoint::new(
@@ -148,6 +179,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		}
 		endpoint
 	};
+
+	// start listening for shutdown
+
+	let stop_token = CancellationToken::new();
+	{
+		let stop_token = stop_token.clone();
+		tokio::spawn(async move {
+			tokio::signal::ctrl_c().await.unwrap();
+			info!("stopping server...");
+			stop_token.cancel();
+		});
+	}
 
 	// main body
 
