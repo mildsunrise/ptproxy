@@ -1,6 +1,15 @@
-use std::{sync::Arc, time::Duration, path::Path, error::Error};
+use std::{sync::Arc, time::Duration, path::Path, error::Error, pin::Pin};
+
+use futures::{future::poll_fn, Stream};
 
 use crate::config;
+
+// async utils
+
+/// returns a future that polls an Unpin stream, discarding all items, until it terminates.
+pub async fn drain_stream<S: Stream + Unpin>(stream: &mut S) {
+	while let Some(_) = poll_fn(|cx| Pin::new(&mut *stream).poll_next(cx)).await {};
+}
 
 // TLS stuff
 

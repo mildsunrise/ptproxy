@@ -8,12 +8,11 @@ use std::{
 	sync::{
 		Arc, RwLock,
 	},
-	time::Duration, future::poll_fn, pin::Pin,
+	time::Duration,
 };
 
 use bytes::Bytes;
 use futures::stream::FuturesUnordered;
-use futures::stream::Stream;
 use h3::error::ErrorLevel;
 use http::Response;
 use hyper::{Server, service::{make_service_fn, service_fn}, Body};
@@ -29,6 +28,7 @@ use h3_quinn::quinn;
 mod config;
 mod utils;
 use crate::config::PeerMode;
+use crate::utils::drain_stream;
 
 static ALPN: &[u8] = b"h3";
 
@@ -378,18 +378,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	let server_loop = || async {
 		let mut connections = FuturesUnordered::new();
 
-		async fn drain_stream<S: Stream + Unpin>(stream: &mut S) -> bool {
-			while let Some(_) = poll_fn(|cx| Pin::new(&mut *stream).poll_next(cx)).await {};
-			false
-		}
-
 		loop {
 			// wait for a connection attempt to arrive, unless shutdown
 			// (in the meantime drive the existing connections, if any)
 			let connecting: quinn::Connecting = select! {
 				() = stop_token.cancelled() => break,
 				value = endpoint.accept() => value,
-				true = drain_stream(&mut connections) => unreachable!(),
+				true = async {
+					drain_stream(&mut connections).await;
+					false // won't match the branch pattern
+				} => unreachable!(),
 			}.unwrap();
 
 			// use spawn_local (i.e. run the handlers in our same thread) because ptproxy
@@ -412,6 +410,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 			try_join!(listener_loop(), client_loop())?;
 		},
 		PeerMode::Server => {
+			// start HTTP/3 server
 			server_loop().await;
 		},
 	}
