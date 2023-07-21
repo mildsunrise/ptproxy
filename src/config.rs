@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::{path::PathBuf, net::{IpAddr, SocketAddr}};
 
 /// Root configuration for ptproxy.
 #[derive(Deserialize, Debug)]
@@ -36,7 +36,8 @@ pub struct GeneralConfig {
 
 	/// Address to bind the QUIC socket at (valid in both server and client mode).
 	/// **Default:** `"::"` (IPv6 wildcard address)
-	pub bind_address: Option<String>,
+	#[serde(default = "default_bind_address")]
+	pub bind_address: IpAddr,
 
 	/// Only valid in client mode: overrides the address to connect to the peer over QUIC.
 	/// **Default:** uses the value of `hostname`
@@ -44,7 +45,7 @@ pub struct GeneralConfig {
 
 	/// Only valid in client mode: socket address to bind the listening HTTP/1.1 endpoint at.
 	/// **Default:** `[::1]:20080`
-	pub http_bind_address: Option<String>,
+	pub http_bind_address: Option<SocketAddr>,
 
 	/// Only valid in server mode: socket address to send HTTP/1.1 requests (received from the peer) to.
 	/// **Required**
@@ -61,8 +62,12 @@ fn default_quic_port() -> u16 {
 	20010
 }
 
-pub fn default_http_bind_address() -> &'static str {
-	"[::1]:20080"
+fn default_bind_address() -> IpAddr {
+	"::".parse().unwrap()
+}
+
+pub fn default_http_bind_address() -> SocketAddr {
+	"[::1]:20080".parse().unwrap()
 }
 
 /// TLS identity settings for the QUIC endpoint.

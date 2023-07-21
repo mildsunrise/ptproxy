@@ -136,10 +136,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	);
 
 	let endpoint_addr = SocketAddr::new(
-		match general.bind_address {
-			Some(addr) => addr.parse()?,
-			None => IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0)),
-		},
+		general.bind_address,
 		match general.mode {
 			PeerMode::Client => 0,
 			PeerMode::Server => general.quic_port,
@@ -159,8 +156,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	let listener_addr = general
 		.http_bind_address
 		.clone()
-		.unwrap_or(config::default_http_bind_address().into())
-		.parse::<SocketAddr>()?;
+		.unwrap_or(config::default_http_bind_address());
 
 	// start QUIC endpoint
 
