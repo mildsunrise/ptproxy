@@ -5,9 +5,7 @@ use std::{
 	error::Error,
 	net::SocketAddr,
 	path::PathBuf,
-	sync::{
-		Arc, RwLock,
-	},
+	sync::{Arc, RwLock},
 	time::Duration,
 };
 
@@ -15,11 +13,14 @@ use bytes::Bytes;
 use futures::stream::FuturesUnordered;
 use h3::error::ErrorLevel;
 use http::Response;
-use hyper::{Server, service::{make_service_fn, service_fn}, Body};
+use hyper::{
+	service::{make_service_fn, service_fn},
+	Body, Server,
+};
 use rand::{seq::IteratorRandom, thread_rng};
 use rustls::server::AllowAnyAuthenticatedClient;
 use structopt::StructOpt;
-use tokio::{io::AsyncWriteExt, net::lookup_host, time::sleep, select, try_join};
+use tokio::{io::AsyncWriteExt, net::lookup_host, select, time::sleep, try_join};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
@@ -56,7 +57,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	// parse args, read config
 
 	let opt = Opt::from_args();
-	let config: config::Config = toml::from_str(&tokio::fs::read_to_string(opt.config.clone()).await?)?;
+	let config: config::Config =
+		toml::from_str(&tokio::fs::read_to_string(opt.config.clone()).await?)?;
 	let config_base = opt.config.parent().unwrap();
 	let general = config.general;
 	let connect_interval = Duration::from_millis(
@@ -71,8 +73,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	let roots = {
 		let mut roots = rustls::RootCertStore::empty();
 		let certs = match config.tls.ca {
-			Some(path) =>
-				crate::utils::load_certificates_from_pem(&config_base.join(path))?,
+			Some(path) => crate::utils::load_certificates_from_pem(&config_base.join(path))?,
 			None => rustls_native_certs::load_native_certs()?
 				.into_iter()
 				.map(|c| rustls::Certificate(c.0))
@@ -91,7 +92,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 	let endpoint_config = quinn::EndpointConfig::default();
 
-	let transport_config = Arc::new(crate::utils::build_transport_config(general.mode, &config.transport)?);
+	let transport_config = Arc::new(crate::utils::build_transport_config(
+		general.mode,
+		&config.transport,
+	)?);
 
 	let client_config = {
 		let mut tls_config = rustls::ClientConfig::builder()
@@ -245,7 +249,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 		// register new connection so incoming requests use it
 		let state_guard = ConnectionGuard(&current_connection);
-		*state_guard.0.write().unwrap() = Some(EstablishedConnection { send_request: Some(send_request) });
+		*state_guard.0.write().unwrap() = Some(EstablishedConnection {
+			send_request: Some(send_request),
+		});
 		info!("tunnel ready");
 
 		// have we begun a connection close from our end? (equivalent to state_guard's send_request.is_some())
@@ -266,7 +272,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 		// if connection ended gracefully, check if it was due to us closing, or if it was the server
 		// in the latter case, this is an error condition for us and we must report + reconnect if needed
-		if ! have_closed {
+		if !have_closed {
 			Err("server closed the connection")?
 		}
 
@@ -332,10 +338,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 					Ok(None) => break Err("client closed the connection".into()),
 					Err(err) => {
 						if err.get_error_level() == ErrorLevel::StreamError {
-							error!("connection {} failed accepting: {}", quinn_connection.stable_id(), err);
-							continue
+							error!(
+								"connection {} failed accepting: {}",
+								quinn_connection.stable_id(),
+								err
+							);
+							continue;
 						}
-						break Err(err.into())
+						break Err(err.into());
 					}
 				};
 
@@ -408,15 +418,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		PeerMode::Client => {
 			// start HTTP/1.1 server + connection establishing loop
 			try_join!(listener_loop(), client_loop())?;
-		},
+		}
 		PeerMode::Server => {
 			// start HTTP/3 server
 			server_loop().await;
-		},
+		}
 	}
 
 	// close any remaining QUIC connection in the endpoint (should never happen, but just in case)
-	endpoint.close(h3::error::Code::H3_NO_ERROR.value().try_into().unwrap(), &[]);
+	endpoint.close(
+		h3::error::Code::H3_NO_ERROR.value().try_into().unwrap(),
+		&[],
+	);
 
 	// wait for the (closed) connections to completely extinguish
 	info!("waiting for endpoint to finish...");
