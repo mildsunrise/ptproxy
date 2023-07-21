@@ -599,6 +599,7 @@ name = "ptproxy"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "futures",
  "h3",
  "h3-quinn",
  "http",

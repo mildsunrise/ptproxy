@@ -1,22 +1,27 @@
 // FIXME: use async in closures, into_err
 
 use std::{
-	convert::identity as id,
+	convert::{identity as id, Infallible},
 	error::Error,
-	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+	net::SocketAddr,
 	path::PathBuf,
 	sync::{
-		atomic::{AtomicBool, Ordering},
-		Arc,
+		Arc, RwLock,
 	},
-	time::Duration,
+	time::Duration, future::poll_fn, pin::Pin,
 };
 
-use futures::future;
+use bytes::Bytes;
+use futures::stream::FuturesUnordered;
+use futures::stream::Stream;
+use h3::error::ErrorLevel;
+use http::Response;
+use hyper::{Server, service::{make_service_fn, service_fn}, Body};
 use rand::{seq::IteratorRandom, thread_rng};
 use rustls::server::AllowAnyAuthenticatedClient;
 use structopt::StructOpt;
-use tokio::{io::AsyncWriteExt, net::lookup_host, time::sleep};
+use tokio::{io::AsyncWriteExt, net::lookup_host, time::sleep, select, try_join};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use h3_quinn::quinn;
@@ -187,8 +192,236 @@ async fn main() -> Result<(), Box<dyn Error>> {
 			tokio::signal::ctrl_c().await.unwrap();
 			info!("stopping server...");
 			stop_token.cancel();
+			// a second ctrl_c exits immediately
+			tokio::signal::ctrl_c().await.unwrap();
+			std::process::exit(130);
 		});
 	}
+
+	// main body: client
+
+	struct EstablishedConnection {
+		// this is inside an Option (even though EstablishedConnection itself can be or not be present)
+		// because it's our way to signal h3 to send GOAWAY. but we may have other data in the
+		// connection we might want to make accessible to the rest of the application even when
+		// the connection is in the process of being closed.
+		send_request: Option<h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>>,
+	}
+
+	struct ConnectionGuard<'a>(&'a RwLock<Option<EstablishedConnection>>);
+
+	impl<'a> Drop for ConnectionGuard<'a> {
+		fn drop(&mut self) {
+			*self.0.write().unwrap() = None;
+		}
+	}
+
+	let current_connection = Arc::new(RwLock::new(None::<EstablishedConnection>));
+
+	let establish_client_connection = || async {
+		// resolve destination
+		let addr = lookup_host(&client_addr)
+			.await?
+			.choose(&mut thread_rng())
+			.ok_or("resolution found no addresses")?;
+
+		// attempt to establish QUIC connection
+		let quinn_connection = endpoint.connect(addr, &general.hostname)?.await?;
+		info!("connection {} established", quinn_connection.stable_id());
+
+		// create HTTP/3 connection
+		let h3_connection = h3_quinn::Connection::new(quinn_connection);
+		let connection = h3::client::new(h3_connection).await?;
+
+		Ok::<_, Box<dyn Error>>(connection)
+	};
+
+	let client_iteration = || async {
+		// attempt to establish a connection (cancelling on shutdown)
+		let (mut driver, send_request) = select! {
+			() = stop_token.cancelled() => return Ok(()),
+			value = establish_client_connection() => value,
+		}?;
+
+		// register new connection so incoming requests use it
+		let state_guard = ConnectionGuard(&current_connection);
+		*state_guard.0.write().unwrap() = Some(EstablishedConnection { send_request: Some(send_request) });
+		info!("tunnel ready");
+
+		// have we begun a connection close from our end? (equivalent to state_guard's send_request.is_some())
+		let mut have_closed = false;
+
+		// wait for connection end, while listening for a shutdown signal
+		select! {
+			true = async {
+				stop_token.cancelled().await;
+				if ! have_closed {
+					have_closed = true;
+					state_guard.0.write().unwrap().as_mut().unwrap().send_request = None;
+				}
+				false // won't match the branch pattern
+			} => unreachable!(),
+			value = driver.wait_idle() => value,
+		}?;
+
+		// if connection ended gracefully, check if it was due to us closing, or if it was the server
+		// in the latter case, this is an error condition for us and we must report + reconnect if needed
+		if ! have_closed {
+			Err("server closed the connection")?
+		}
+
+		// if it was due to us closing the connection, then it's because of shutdown, so signal this to the client loop
+		Ok::<(), Box<dyn Error>>(())
+	};
+
+	let client_loop = || async {
+		// client_iteration returns Ok(()) to signal shutdown
+		while let Err(error) = client_iteration().await {
+			error!("client connection failed: {}", error);
+			sleep(connect_interval).await;
+		}
+		Ok::<(), Box<dyn Error>>(())
+	};
+
+	let handle_request_client = |request| {
+		async move {
+			Ok::<_, Infallible>(Response::<Body>::new("Hello, World".into()))
+		}
+	};
+
+	let listener_loop = || async {
+		let make_svc = make_service_fn(|_conn| async move {
+			Ok::<_, Infallible>(service_fn(handle_request_client.clone()))
+		});
+		Server::bind(&listener_addr)
+			.serve(make_svc)
+			.with_graceful_shutdown(stop_token.cancelled())
+			.await?;
+		Ok::<(), Box<dyn Error>>(())
+	};
+
+	// main body: server
+
+	let handle_request_server = |(req, stream)| async move {
+		info!("new request: {:#?}", req);
+		// TODO
+		Ok::<_, Box<dyn Error + Sync + Send>>(())
+	};
+
+	let handle_established_connection_server = |quinn_connection: quinn::Connection| {
+		let stop_token = &stop_token;
+		async move {
+			// create HTTP/3 connection
+			let h3_connection = h3_quinn::Connection::new(quinn_connection.clone());
+			let mut connection = select! {
+				() = stop_token.cancelled() => return Ok(()),
+				value = h3::server::Connection::<_, Bytes>::new(h3_connection) => value,
+			}?;
+
+			// accept requests while not shutdown
+			let result = loop {
+				let request = select! {
+					() = stop_token.cancelled() => break Ok(()),
+					value = connection.accept() => value,
+				};
+
+				// handle accept() errors
+				let request = match request {
+					Ok(Some(value)) => value,
+					// no more streams to be received
+					Ok(None) => break Err("client closed the connection".into()),
+					Err(err) => {
+						if err.get_error_level() == ErrorLevel::StreamError {
+							error!("connection {} failed accepting: {}", quinn_connection.stable_id(), err);
+							continue
+						}
+						break Err(err.into())
+					}
+				};
+
+				// spawn a task to handle the request
+				tokio::spawn(handle_request_server(request));
+			};
+
+			// wait for outstanding requests to be processed
+			// (here we .and() to result because if both accept and
+			// shutdown fail, the likely correct thing to do is report the 1st error)
+			let result = result.and(connection.shutdown(100).await.map_err(|err| err.into())); // FIXME: make configurable
+
+			id::<Result<_, Box<dyn Error>>>(result)
+		}
+	};
+
+	let handle_connection_server = |connection| async {
+		// carry the connection handshake, unless shutdown
+		let connection = select! {
+			() = stop_token.cancelled() => return,
+			value = connection => value,
+		};
+		let connection: quinn::Connection = match connection {
+			Ok(value) => value,
+			// don't report on connection errors until we can trust the other peer;
+			// if legitimate, the errors will appear on the client anyway
+			Err(_) => return,
+		};
+		info!("connection {} established", connection.stable_id());
+
+		// process the established connection
+		let result = handle_established_connection_server(connection.clone()).await;
+
+		// if Ok(()) then shutdown, otherwise report connection error
+		if let Err(error) = result {
+			error!("connection {} failed: {}", connection.stable_id(), error);
+		}
+	};
+
+	let server_loop = || async {
+		let mut connections = FuturesUnordered::new();
+
+		async fn drain_stream<S: Stream + Unpin>(stream: &mut S) -> bool {
+			while let Some(_) = poll_fn(|cx| Pin::new(&mut *stream).poll_next(cx)).await {};
+			false
+		}
+
+		loop {
+			// wait for a connection attempt to arrive, unless shutdown
+			// (in the meantime drive the existing connections, if any)
+			let connecting: quinn::Connecting = select! {
+				() = stop_token.cancelled() => break,
+				value = endpoint.accept() => value,
+				true = drain_stream(&mut connections) => unreachable!(),
+			}.unwrap();
+
+			// use spawn_local (i.e. run the handlers in our same thread) because ptproxy
+			// is meant to be a point-to-point proxy and so there will usually be a
+			// single connection to handle, save for exceptional states. thus it's not
+			// worth it to subject ourselves to the restrictions of spawn() just so
+			// they can run in other threads.
+			connections.push(handle_connection_server(connecting));
+		}
+
+		// wait for outstanding connections to be closed
+		drain_stream(&mut connections).await;
+	};
+
+	// run the thing!
+
+	match general.mode {
+		PeerMode::Client => {
+			// start HTTP/1.1 server + connection establishing loop
+			try_join!(listener_loop(), client_loop())?;
+		},
+		PeerMode::Server => {
+			server_loop().await;
+		},
+	}
+
+	// close any remaining QUIC connection in the endpoint (should never happen, but just in case)
+	endpoint.close(h3::error::Code::H3_NO_ERROR.value().try_into().unwrap(), &[]);
+
+	// wait for the (closed) connections to completely extinguish
+	info!("waiting for endpoint to finish...");
+	endpoint.wait_idle().await;
 
 	Ok(())
 }
