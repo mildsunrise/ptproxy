@@ -1,5 +1,17 @@
 # ptproxy
 
+  * [Motivation](#motivation)
+    + [What's this?](#whats-this)
+    + [Why do I need this? What's a sensitive network link?](#why-do-i-need-this-whats-a-sensitive-network-link)
+    + [What's wrong with a VPN?](#whats-wrong-with-a-vpn)
+    + [What's wrong with HTTP\[S\]?](#whats-wrong-with-https)
+    + [What's wrong with existing reverse proxies?](#whats-wrong-with-existing-reverse-proxies)
+    + [What's this again?](#whats-this-again)
+  * [Usage](#usage)
+    + [Prerrequisites](#prerrequisites)
+    + [Initial setup](#initial-setup)
+    + [Tuning](#tuning)
+
 ## Motivation
 
 ### What's this?
@@ -26,7 +38,7 @@ We say "sensitive network link" to refer to links that have at least some of the
 
 An overlay network can get you a secure link over an insecure one, but it can't make the other problems (especially extra latency from establishment, congestion control) go away. A solution based around the request-response model is more appropriate here.
 
-### What's wrong with HTTP\[S]?
+### What's wrong with HTTP\[S\]?
 
 Nothing actually. TCP and TLS are in theory prepared to handle the above challenges (e.g. for latency there's TCP Fast Open and TLS 0-RTT), and there are some techniques that can be used to improve latency and stability (such as connection pooling, pre-establishment, HTTP/1.1 keepalive, pipelining). HTTP/2 allows multiplexing requests over a single connection (which improves congestion handling and removes the need for many earlier techniques) and compresses headers for efficiency. HTTP/3 drops TCP in favor of a better transport layer (QUIC) with a variety of improvements around handshake speed, size, head of line blocking and congestion control.
 
@@ -83,7 +95,7 @@ $ mkcert bar.localhost
 
 ### Initial setup
 
-Deploy ptproxy, the CA cert and the corresponding certificate & key to each end. Then you'll need to create a configuration file in each. A minimal example looks like this:
+Deploy ptproxy, the CA cert and the corresponding certificate & key to each end. Then you'll need to create a configuration file for each. A minimal example looks like this:
 
  - **client side** (where requests originate):
 
@@ -121,11 +133,12 @@ Deploy ptproxy, the CA cert and the corresponding certificate & key to each end.
    key = "bar.localhost-key.pem"
    ~~~
 
-ptproxy uses port **20010** for the HTTP/3 tunnel between the peers, but it can be customized by setting the `quic_port` parameter in both ends. Make sure this port is open on the server end. Then start ptproxy in both ends and, if everything is correct, you should see this:
+ptproxy uses port **20010** for the HTTP/3 tunnel between the peers, but it can be customized by setting the `quic_port` parameter in both ends. Make sure this UDP port is open on the server end. Then start ptproxy and, if everything is correct, you should see this:
 
  - **client side**:
 
    ~~~
+   $ ptproxy --config client.toml
    2023-07-24T19:10:23.877447Z  INFO ptproxy: started endpoint at [::]:60395
    2023-07-24T19:10:23.889674Z  INFO ptproxy: connection 94756025388432 established
    2023-07-24T19:10:23.892695Z  INFO ptproxy: tunnel ready
@@ -134,6 +147,7 @@ ptproxy uses port **20010** for the HTTP/3 tunnel between the peers, but it can 
  - **server side**:
 
    ~~~
+   $ ptproxy --config server.toml
    2023-07-24T19:10:22.512993Z  INFO ptproxy: started endpoint at [::]:20010
    2023-07-24T19:10:23.892110Z  INFO ptproxy: connection 140126596472240 established ([::ffff:81.135.102.59]:60395)
    ~~~
