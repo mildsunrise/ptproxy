@@ -7,7 +7,7 @@ use std::{
 	net::SocketAddr,
 	path::PathBuf,
 	sync::{Arc, Mutex},
-	time::Duration, future::poll_fn,
+	time::Duration,
 };
 
 use bytes::{Bytes, Buf};
@@ -403,13 +403,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 				tokio::spawn(async move {
 					let result: Result<(), Box<dyn Error + Send + Sync>> = try {
 						while let Some(mut buf) = {
-							poll_fn(|cx| sender.poll_ready(cx)).await.map_err(|err| format!("when waiting ready: {}", err))?;
 							stream.recv_data().await.map_err(|err| format!("when receiving data: {}", err))?
 						} {
 							// FIXME: if server closes the connection, don't raise error, instead stream.stop_sending() and return.
 							// in case the server is closing the connection because it has issued an early response, then
 							// response will resolve and if not, then response future will fail anyway
-							sender.try_send_data(buf.copy_to_bytes(buf.remaining())).map_err(|_| "server closed the connection")?;
+							sender.send_data(buf.copy_to_bytes(buf.remaining())).await.map_err(|err| format!("when sending data: {}", err))?;
 						}
 					};
 					if let Err(err) = result {
@@ -480,13 +479,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 				async {
 					let result = try {
 						while let Some(mut buf) = {
-							poll_fn(|cx| sender.poll_ready(cx)).await.map_err(|err| format!("when waiting ready: {}", err))?;
 							stream.recv_data().await.map_err(|err| format!("when receiving data: {}", err))?
 						} {
 							// FIXME: if server closes the connection, don't raise error, instead stream.stop_sending() and return.
 							// in case the server is closing the connection because it has issued an early response, then
 							// response will resolve and if not, then response future will fail anyway
-							sender.try_send_data(buf.copy_to_bytes(buf.remaining())).map_err(|_| "server closed the connection")?;
+							sender.send_data(buf.copy_to_bytes(buf.remaining())).await.map_err(|err| format!("when sending data: {}", err))?;
 						}
 					};
 					if let Err(_) = result {
