@@ -1,3 +1,4 @@
+#![feature(try_blocks, byte_slice_trim_ascii)]
 // FIXME: use async in closures, into_err
 
 use std::{
@@ -5,22 +6,22 @@ use std::{
 	error::Error,
 	net::SocketAddr,
 	path::PathBuf,
-	sync::{Arc, RwLock},
-	time::Duration,
+	sync::{Arc, Mutex},
+	time::Duration, future::poll_fn,
 };
 
-use bytes::Bytes;
+use bytes::{Bytes, Buf};
 use futures::stream::FuturesUnordered;
-use h3::error::ErrorLevel;
-use http::Response;
+use h3::error::{ErrorLevel, Code};
+use http::{Response, Request, HeaderName, header, HeaderMap, HeaderValue, Method, StatusCode, uri::Scheme, Uri};
 use hyper::{
 	service::{make_service_fn, service_fn},
-	Body, Server,
+	Body, Server, body::HttpBody,
 };
 use rand::{seq::IteratorRandom, thread_rng};
 use rustls::server::AllowAnyAuthenticatedClient;
 use structopt::StructOpt;
-use tokio::{io::AsyncWriteExt, net::lookup_host, select, time::sleep, try_join};
+use tokio::{net::lookup_host, select, time::sleep, try_join};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
@@ -169,6 +170,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		.clone()
 		.unwrap_or(config::default_http_bind_address());
 
+	// prepare the base upstream URL now, this way we also validate the address is valid
+	let upstream_url = match general.http_connect_address {
+		None => None,
+		Some(addr) => Some(Uri::builder()
+			.scheme(Scheme::HTTP)
+			.authority(addr)
+			.path_and_query("/") // dummy path so it accepts it
+			.build()?),
+	};
+
+	let http_client = hyper::Client::builder()
+		.http1_title_case_headers(true)
+		.set_host(false)
+		.build_http::<hyper::Body>();
+
 	// start QUIC endpoint
 
 	let socket = std::net::UdpSocket::bind(endpoint_addr)?;
@@ -212,15 +228,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		send_request: Option<h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>>,
 	}
 
-	struct ConnectionGuard<'a>(&'a RwLock<Option<EstablishedConnection>>);
+	struct ConnectionGuard<'a>(&'a Mutex<Option<EstablishedConnection>>);
 
 	impl<'a> Drop for ConnectionGuard<'a> {
 		fn drop(&mut self) {
-			*self.0.write().unwrap() = None;
+			*self.0.lock().unwrap() = None;
 		}
 	}
 
-	let current_connection = Arc::new(RwLock::new(None::<EstablishedConnection>));
+	let current_connection = Arc::new(Mutex::new(None::<EstablishedConnection>));
 
 	let establish_client_connection = || async {
 		// resolve destination
@@ -249,7 +265,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 		// register new connection so incoming requests use it
 		let state_guard = ConnectionGuard(&current_connection);
-		*state_guard.0.write().unwrap() = Some(EstablishedConnection {
+		*state_guard.0.lock().unwrap() = Some(EstablishedConnection {
 			send_request: Some(send_request),
 		});
 		info!("tunnel ready");
@@ -262,7 +278,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 			stop_token.cancelled().await;
 			if !have_closed {
 				have_closed = true;
-				state_guard.0.write().unwrap().as_mut().unwrap().send_request = None;
+				state_guard.0.lock().unwrap().as_mut().unwrap().send_request = None;
 			}
 		})
 		.await?;
@@ -286,17 +302,137 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		Ok::<(), Box<dyn Error>>(())
 	};
 
-	let handle_request_client = |request| {
-		async move {
-			Ok::<_, Infallible>(Response::<Body>::new("Hello, World".into()))
+	let handle_request_client = {
+		let current_connection = current_connection.clone();
+		move |mut request: Request<Body>| {
+			let current_connection = current_connection.clone();
+			async move {
+				// reject CONNECT requests
+				if request.method() == Method::CONNECT {
+					return Ok(Response::builder()
+						.header(header::SERVER, "ptproxy client")
+						.status(StatusCode::METHOD_NOT_ALLOWED)
+						.body("CONNECT requests not implemented yet\n".into())
+						.unwrap());
+				}
+
+				// TODO: enforce Host to be present, enforce URL to have only a path
+
+				// handle Transfer-Encoding
+				let chunked = match is_chunked_message(request.headers()) {
+					Some(x) => x,
+					None => return Ok(Response::builder()
+						.header(header::SERVER, "ptproxy client")
+						.status(StatusCode::BAD_REQUEST)
+						.body("invalid Transfer-Encoding value: only chunked transfer coding supported\n".into())
+						.unwrap()),
+				};
+				if chunked {
+					request.headers_mut().remove(header::CONTENT_LENGTH);
+				}
+
+				// do this as the last step, since previous steps depend on reading connection headers
+				remove_hop_by_hop_headers(request.headers_mut());
+
+				// retrieve current tunnel to send requests over
+				let send_request = {
+					let current_connection = current_connection.lock().unwrap();
+					current_connection.as_ref().and_then(|s| s.send_request.clone())
+				};
+				let mut send_request = match send_request {
+					Some(value) => value,
+					None => return Ok(Response::builder()
+						.header(header::SERVER, "ptproxy client")
+						.status(StatusCode::SERVICE_UNAVAILABLE)
+						.body("tunnel not established\n".into())
+						.unwrap()),
+				};
+
+				// actually (attempt to) proxy the request
+				*request.version_mut() = http::Version::HTTP_3;
+				let (mut body, request) = {
+					let (parts, body) = request.into_parts();
+					(body, Request::from_parts(parts, ()))
+				};
+				//info!("forwarded request: {:#?}", request);
+				let mut stream = match send_request.send_request(request).await {
+					Ok(value) => value,
+					Err(err) => return Ok(Response::builder()
+						.header(header::SERVER, "ptproxy client")
+						.status(StatusCode::BAD_GATEWAY)
+						.body(format!("error sending request:\n{}\n", err).into())
+						.unwrap()),
+				};
+
+				// proxy request body
+				let proxy_request_body = async {
+					while let Some(buf) = body.data().await {
+						let buf = buf.map_err(|err| format!("when receiving data: {}", err))?;
+						stream.send_data(buf).await.map_err(|err| format!("when sending data: {}", err))?;
+					}
+					stream.finish().await.map_err(|err| format!("when finishing stream: {}", err))?;
+					Ok::<_, Box<dyn Error>>(())
+				};
+				if let Err(err) = proxy_request_body.await {
+					return Ok(Response::builder()
+						.header(header::SERVER, "ptproxy client")
+						.status(StatusCode::BAD_GATEWAY)
+						.body(format!("error when streaming request body:\n{}\n", err).into())
+						.unwrap())
+				}
+
+				// proxy response
+				let mut response = match stream.recv_response().await {
+					Ok(value) => value,
+					Err(err) => return Ok(Response::builder()
+						.header(header::SERVER, "ptproxy client")
+						.status(StatusCode::BAD_GATEWAY)
+						.body(format!("error when receiving response:\n{}\n", err).into())
+						.unwrap())
+				};
+				//info!("response: {:#?}", response);
+
+				// FIXME: do we need to add transfer-encoding ourselves?
+
+				// actually (attempt to) proxy the response
+				*response.version_mut() = http::Version::HTTP_11;
+				let (mut sender, response) = {
+					let (sender, body) = Body::channel();
+					(sender, Response::from_parts(response.into_parts().0, body))
+				};
+				tokio::spawn(async move {
+					let result: Result<(), Box<dyn Error + Send + Sync>> = try {
+						while let Some(mut buf) = {
+							poll_fn(|cx| sender.poll_ready(cx)).await.map_err(|err| format!("when waiting ready: {}", err))?;
+							stream.recv_data().await.map_err(|err| format!("when receiving data: {}", err))?
+						} {
+							// FIXME: if server closes the connection, don't raise error, instead stream.stop_sending() and return.
+							// in case the server is closing the connection because it has issued an early response, then
+							// response will resolve and if not, then response future will fail anyway
+							sender.try_send_data(buf.copy_to_bytes(buf.remaining())).map_err(|_| "server closed the connection")?;
+						}
+					};
+					if let Err(err) = result {
+						// this call already causes the async block to take ownership of 'sender',
+						// meaning it will be dropped also after a successful stream
+						sender.abort();
+						error!("error when proxying response: {}", err);
+					}
+				});
+				Ok::<_, Infallible>(response)
+			}
 		}
 	};
 
 	let listener_loop = || async {
-		let make_svc = make_service_fn(|_conn| async move {
-			Ok::<_, Infallible>(service_fn(handle_request_client.clone()))
+		let make_svc = make_service_fn(move |_conn| {
+			let handle_request_client = handle_request_client.clone();
+			async move {
+				Ok::<_, Infallible>(service_fn(handle_request_client))
+			}
 		});
 		Server::bind(&listener_addr)
+        	.http1_title_case_headers(true)
 			.serve(make_svc)
 			.with_graceful_shutdown(stop_token.cancelled())
 			.await?;
@@ -305,10 +441,119 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 	// main body: server
 
-	let handle_request_server = |(req, stream)| async move {
-		info!("new request: {:#?}", req);
-		// TODO
-		Ok::<_, Box<dyn Error + Sync + Send>>(())
+	let handle_request_server = |(mut request, mut stream): (Request<()>, h3::server::RequestStream<_, _>)| {
+		let upstream_url = upstream_url.clone().unwrap();
+		let http_client = http_client.clone();
+		async move {
+			//info!("request: {:#?}", request);
+
+			// deconvert url + host header
+			if request.uri().scheme() != Some(&Scheme::HTTPS) {
+				// FIXME: send 400
+			}
+			if !request.headers().contains_key(header::HOST) {
+				let authority = match request.uri().authority() {
+					Some(value) => value,
+					None => unreachable!(), //FIXME: send 400
+				};
+				let value = authority.as_str().try_into().unwrap();
+				request.headers_mut().append(header::HOST, value);
+			}
+			*request.uri_mut() = {
+				let mut parts = upstream_url.into_parts();
+				parts.path_and_query = Some(request.uri().path_and_query().unwrap().clone());
+				Uri::from_parts(parts).unwrap()
+			};
+
+			// FIXME: do we need to add transfer-encoding ourselves?
+
+			// actually (attempt to) proxy the request
+			*request.version_mut() = http::Version::HTTP_11;
+			let (mut sender, request) = {
+				let (sender, body) = Body::channel();
+				(sender, Request::from_parts(request.into_parts().0, body))
+			};
+			let response: Result<_, Box<dyn Error + Sync + Send>> = try_join!(
+				async {
+					Ok(http_client.request(request).await.map_err(|err| format!("when making request: {}", err))?)
+				},
+				async {
+					let result = try {
+						while let Some(mut buf) = {
+							poll_fn(|cx| sender.poll_ready(cx)).await.map_err(|err| format!("when waiting ready: {}", err))?;
+							stream.recv_data().await.map_err(|err| format!("when receiving data: {}", err))?
+						} {
+							// FIXME: if server closes the connection, don't raise error, instead stream.stop_sending() and return.
+							// in case the server is closing the connection because it has issued an early response, then
+							// response will resolve and if not, then response future will fail anyway
+							sender.try_send_data(buf.copy_to_bytes(buf.remaining())).map_err(|_| "server closed the connection")?;
+						}
+					};
+					if let Err(_) = result {
+						// this call already causes the async block to take ownership of 'sender',
+						// meaning it will be dropped also after a successful stream
+						sender.abort();
+					}
+					result
+				}
+			);
+			let mut response = match response {
+				Ok((value, ())) => value,
+				Err(err) => {
+					// FIXME: maybe handle errors when sending this response in a better way?
+					let body: Bytes = format!("could not proxy request:\n{}\n", err).into();
+					stream.send_response(Response::builder()
+						.header(header::SERVER, "ptproxy server")
+						.header(header::CONTENT_LENGTH, body.len())
+						.status(StatusCode::BAD_GATEWAY)
+						.body(())
+						.unwrap()).await?;
+					stream.send_data(body).await?;
+					stream.stop_sending(Code::H3_NO_ERROR);
+					stream.finish().await?;
+					return Ok(());
+				},
+			};
+
+			// handle Transfer-Encoding
+			let chunked = match is_chunked_message(response.headers()) {
+				Some(x) => x,
+				None => unreachable!(), // FIXME: send 502
+			};
+			if chunked {
+				response.headers_mut().remove(header::CONTENT_LENGTH);
+			}
+
+			// do this as the last step, since previous steps depend on reading connection headers
+			remove_hop_by_hop_headers(response.headers_mut());
+
+			// proxy response
+			*response.version_mut() = http::Version::HTTP_3;
+			let (mut body, response) = {
+				let (parts, body) = response.into_parts();
+				(body, Response::from_parts(parts, ()))
+			};
+			//info!("forwarded response: {:#?}", response);
+			if let Err(err) = stream.send_response(response).await {
+				error!("error sending response: {}", err);
+				stream.stop_stream(Code::H3_INTERNAL_ERROR);
+				return Ok(());
+			}
+			let proxy_response_body = async {
+				while let Some(buf) = body.data().await {
+					let buf = buf.map_err(|err| format!("when receiving data: {}", err))?;
+					stream.send_data(buf).await.map_err(|err| format!("when sending data: {}", err))?;
+				}
+				stream.finish().await.map_err(|err| format!("when finishing stream: {}", err))?;
+				Ok::<_, Box<dyn Error>>(())
+			};
+			if let Err(err) = proxy_response_body.await {
+				error!("error sending response body: {}", err);
+				stream.stop_stream(Code::H3_INTERNAL_ERROR);
+				return Ok(());
+			}
+			Ok::<_, Box<dyn Error + Sync + Send>>(())
+		}
 	};
 
 	let handle_established_connection_server = |quinn_connection: quinn::Connection| {
@@ -371,7 +616,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 			// if legitimate, the errors will appear on the client anyway
 			Err(_) => return,
 		};
-		info!("connection {} established", connection.stable_id());
+		info!("connection {} established ({})", connection.stable_id(), connection.remote_address());
 
 		// process the established connection
 		let result = handle_established_connection_server(connection.clone()).await;
@@ -397,10 +642,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 				Some(new_conn) => new_conn.unwrap(),
 			};
 
-			// use spawn_local (i.e. run the handlers in our same thread) because ptproxy
-			// is meant to be a point-to-point proxy and so there will usually be a
-			// single connection to handle, save for exceptional states. thus it's not
-			// worth it to subject ourselves to the restrictions of spawn() just so
+			// use FuturesUnordered (i.e. run the handlers in our same thread) because
+			// ptproxy is meant to be a point-to-point proxy and so there will usually
+			// be a single connection to handle, save for exceptional states. thus it's
+			// not worth it to subject ourselves to the restrictions of spawn() just so
 			// they can run in other threads.
 			connections.push(handle_connection_server(connecting));
 		}
@@ -410,6 +655,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	};
 
 	// run the thing!
+
+	info!("started endpoint at {}", endpoint.local_addr()?);
 
 	match general.mode {
 		PeerMode::Client => {
@@ -423,14 +670,72 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	}
 
 	// close any remaining QUIC connection in the endpoint (should never happen, but just in case)
-	endpoint.close(
-		h3::error::Code::H3_NO_ERROR.value().try_into().unwrap(),
-		&[],
-	);
+	endpoint.close(Code::H3_NO_ERROR.value().try_into().unwrap(), &[]);
 
 	// wait for the (closed) connections to completely extinguish
 	info!("waiting for endpoint to finish...");
 	endpoint.wait_idle().await;
 
 	Ok(())
+}
+
+// header manipulation
+
+static HEADER_KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
+static HEADER_PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
+
+fn split_comma(value: &HeaderValue) -> impl Iterator<Item = &[u8]> {
+	value.as_bytes().split(|b| *b == b',').map(|t| t.trim_ascii())
+}
+
+/// split a simple header (one that does not admit a comma in its value) into its individual values
+fn split_simple_header(headers: &HeaderMap<HeaderValue>, header: HeaderName) -> impl Iterator<Item = &[u8]> {
+	headers.get_all(header).iter().map(split_comma).flatten()
+}
+
+fn remove_hop_by_hop_headers(headers: &mut HeaderMap<HeaderValue>) {
+	static KNOWN_HOP_BY_HOP_HEADERS: &[&HeaderName] = &[
+		&header::CONNECTION,
+		&header::TE,
+		&header::TRANSFER_ENCODING,
+		&header::TRAILER,
+		&HEADER_KEEP_ALIVE,
+		&header::UPGRADE,
+		&HEADER_PROXY_CONNECTION,
+		&header::PROXY_AUTHENTICATE,
+		&header::PROXY_AUTHORIZATION,
+	];
+
+	// remove hop-by-hop headers listed in the connection header
+	let connection_headers: Vec<HeaderName> = split_simple_header(headers, header::CONNECTION)
+		.filter_map(|value| HeaderName::from_bytes(value).ok())
+		.filter(|value| value != "close")
+		.collect();
+	for name in connection_headers {
+		headers.remove(name);
+	}
+
+	// finally, remove any known hop-by-hop headers just in case
+	for name in KNOWN_HOP_BY_HOP_HEADERS {
+		headers.remove(*name);
+	}
+}
+
+fn is_chunked_message(headers: &HeaderMap<HeaderValue>) -> Option<bool> {
+	let value: Vec<_> = headers.get_all(header::TRANSFER_ENCODING).iter().collect();
+	if value.is_empty() {
+		return Some(false)
+	}
+
+	// if Transfer-Encoding is present, then it must specify 'chunked' as a single coding.
+	if value.len() != 1 {
+		return None
+	}
+	let value = value.get(0).unwrap().as_bytes().to_ascii_lowercase();
+	// chunked doesn't have encoding parameters, so this is all we need:
+	if value != b"chunked" {
+		return None
+	}
+
+	Some(true)
 }
