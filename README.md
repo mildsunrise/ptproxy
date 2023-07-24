@@ -1,12 +1,14 @@
 # ptproxy
 
-## What's this?
+## Motivation
+
+### What's this?
 
 It's an ad-hoc solution to proxy HTTP/1.1 requests over a sensitive network link.
 
 A typical scenario of use is when you have a service (A) that needs to consume an HTTP API offered by another service (B), and those services are separated by a *sensitive network link* such as the public internet (e.g. they are in different datacenters). Rather than pointing A directly at B, you would start a ptproxy instance next to A in client mode, and a ptproxy instance next to B in server mode. Both ptproxy instances maintain a persistent session, and A issues HTTP requests to its ptproxy, which sends them over to B's ptproxy, which issues them at B.
 
-## Why do I need this? What's a sensitive network link?
+### Why do I need this? What's a sensitive network link?
 
 HTTP/1.1 has become the *lingua franca* for communication among microservices due to its simplicity and wide support. It usually works over inter-container or inter-datacenter links, but depending on the application it may be unsuitable to transport over some links (such as the public internet) for reasons such as:
 
@@ -20,11 +22,11 @@ HTTP/1.1 has become the *lingua franca* for communication among microservices du
 
 We say "sensitive network link" to refer to links that have at least some of these unwanted properties. Whether that's the case often depends on the particular application.
 
-## What's wrong with a VPN?
+### What's wrong with a VPN?
 
 An overlay network can get you a secure link over an insecure one, but it can't make the other problems (especially extra latency from establishment, congestion control) go away. A solution based around the request-response model is more appropriate here.
 
-## What's wrong with HTTP[S]?
+### What's wrong with HTTP\[S]?
 
 Nothing actually. TCP and TLS are in theory prepared to handle the above challenges (e.g. for latency there's TCP Fast Open and TLS 0-RTT), and there are some techniques that can be used to improve latency and stability (such as connection pooling, pre-establishment, HTTP/1.1 keepalive, pipelining). HTTP/2 allows multiplexing requests over a single connection (which improves congestion handling and removes the need for many earlier techniques) and compresses headers for efficiency. HTTP/3 drops TCP in favor of a better transport layer (QUIC) with a variety of improvements around handshake speed, size, head of line blocking and congestion control.
 
@@ -38,7 +40,7 @@ But having the final applications (i.e. the microservices) directly communicate 
 
 The solution to this is using a *reverse proxy* at each end of the link: this decouples application deployment from infrastructure, allows managing knobs from a central place, swapping services easily, etc. This is what ptproxy does.
 
-## What's wrong with existing reverse proxies?
+### What's wrong with existing reverse proxies?
 
 Most reverse proxies don't support the described usecase (a point-to-point link) very well. They usually act as a front server, accepting requests from final users and delivering them to upstreams over a private, controlled link. This design manifests in several ways:
 
@@ -50,7 +52,7 @@ Most reverse proxies don't support the described usecase (a point-to-point link)
 
  - The HTTP session isn't established until the first request(s) arrive, incurring additional latency for those. Also for nginx, the session isn't kept alive forever but for a default of 1h (it could be made to be infinite by touching several settings in both ends, but this isn't recommended because of the design of the server).
 
-## What's this again?
+### What's this again?
 
 ptproxy is a reverse proxy designed specifically for the use case of point-to-point links. It's meant to be portable, offer good control over the transport, easy to set up in both ends and relatively lightweight (though throughput isn't the priority). In the future it could support niche features such as reporting metrics of the established session, sessions against different servers, multiplexing different endpoints over the same session, ACLs...
 
@@ -61,3 +63,111 @@ ptproxy is written in Rust for:
  - **Portability:** HTTP/3 support is a mess in mainland Linux distros thanks to OpenSSL, and Rust avoids dependency on system libraries altogether. It also has much better crossplatform support.
 
  - **Control:** Rust's HTTP/3 ecosystem offers much more control, with most components allowing dependency injection, meaning internal knobs are less likely to be left unexposed. The stack is fully async and even compatible with custom event loops, should we need them in the future.
+
+## Usage
+
+> **⚠️ Warning:** while usable, this is still in the proof-of-concept stage, and lacks support for many minor and not-so-minor features (like WebSocket proxying, or the `X-Forwarded-For` / `Forwarded` headers). Use at your own risk.
+
+### Prerrequisites
+
+To install ptproxy, download the latest prebuilt production binary from the [releases][] section and drop it under e.g. `/usr/bin`. The binary depends only on glibc 2.29, so it should be reasonably portable.
+
+> Alternatively, install [rustup][] and switch to the nightly toolchain (`rustup default nightly`), clone this project and run `cargo build --release`. The resulting binary will be `target/release/ptproxy`.
+
+ptproxy peers mutually verify each other, so you'll need client certificates for one host and server certificates for the other. I recommend using [mkcert][] to generate these certs:
+
+~~~ bash
+$ mkcert -client foo.localhost
+$ mkcert bar.localhost
+~~~
+
+### Initial setup
+
+Deploy ptproxy, the CA cert and the corresponding certificate & key to each end. Then you'll need to create a configuration file in each. A minimal example looks like this:
+
+ - **client side** (where requests originate):
+
+   ~~~ toml
+   [general]
+   mode = "Client"
+   # hostname of the other peer
+   hostname = "bar.localhost"
+   # where to listen for HTTP/1.1 requests
+   http_bind_address = "127.0.0.1:20080"
+
+   [tls]
+   # CA to validate the peer against
+   ca = "rootCA.pem"
+   # certificate to present to the other peer
+   cert = "foo.localhost-client.pem"
+   key = "foo.localhost-client-key.pem"
+   ~~~
+
+ - **server side** (where requests are served):
+
+   ~~~ toml
+   [general]
+   mode = "Server"
+   # hostname of the other peer
+   hostname = "foo.localhost"
+   # where to send requests from the peer to
+   http_connect_address = "localhost:8081"
+
+   [tls]
+   # CA to validate the peer against
+   ca = "rootCA.pem"
+   # certificate to present to the other peer
+   cert = "bar.localhost.pem"
+   key = "bar.localhost-key.pem"
+   ~~~
+
+ptproxy uses port **20010** for the HTTP/3 tunnel between the peers, but it can be customized by setting the `quic_port` parameter in both ends. Make sure this port is open on the server end. Then start ptproxy in both ends and, if everything is correct, you should see this:
+
+ - **client side**:
+
+   ~~~
+   2023-07-24T19:10:23.877447Z  INFO ptproxy: started endpoint at [::]:60395
+   2023-07-24T19:10:23.889674Z  INFO ptproxy: connection 94756025388432 established
+   2023-07-24T19:10:23.892695Z  INFO ptproxy: tunnel ready
+   ~~~
+
+ - **server side**:
+
+   ~~~
+   2023-07-24T19:10:22.512993Z  INFO ptproxy: started endpoint at [::]:20010
+   2023-07-24T19:10:23.892110Z  INFO ptproxy: connection 140126596472240 established ([::ffff:81.135.102.59]:60395)
+   ~~~
+
+This means both instances have successfully established an HTTP/3 session. Try sending some requests to `http://127.0.0.1:20080/` on the client end, and you should see them sent at `http://localhost:8081/` on the other side. If one end goes down and back up again, they should reconnect in a few seconds. See the [configuration fields][config-docs] for more details.
+
+### Tuning
+
+Once the tunnel is working, the next step is usually to tune some of the parameters in the [`[transport]` section][transport-config-docs] of the configuration file to meet your needs. Like TCP, QUIC's [congestion control][] has very conservative defaults. But since this session goes over a known link, we can relax some of them to provide better throughput / latency without the need for the session to warm up.
+
+In particular, you may want to specify the *round-trip time* of the link and the *initial congestion window*, which you can derive using:
+
+$$
+    \text{cwnd} = \text{guaranteed bandwidth (B/sec)} \times {\text{rtt (sec)}}
+$$
+
+For a 150ms link assumed to provide 30mbps, this means adding the following to the config file:
+
+~~~ toml
+[transport]
+# initial estimate of the link's RTT (milliseconds)
+initial_rtt = 150
+# initial congestion control window (bytes)
+initial_window = 487500
+~~~
+
+In general it is best to keep the transport parameters consistent on both sides.
+
+It's highly recommended to use a stress-testing tool like [ab][] to get a feel of the tunnel's performance. While you might expect the latency to equal 1 RTT once properly configured, it will likely be more due to *packet pacing*, a layer that aims to reduce data bursts to prevent data loss. It shapes the traffic to conform to the bandwidth determined by the congestion control window.
+
+[rustup]: https://rustup.rs
+[config-docs]: https://ptproxy.alba.sh/ptproxy/config/struct.Config.html
+[transport-config-docs]: https://ptproxy.alba.sh/ptproxy/config/struct.TransportConfig.html
+[mkcert]: https://github.com/FiloSottile/mkcert
+[releases]: https://github.com/mildsunrise/ptproxy/releases
+[congestion control]: https://quicwg.org/base-drafts/rfc9002.html
+[ab]: https://httpd.apache.org/docs/2.4/programs/ab.html
