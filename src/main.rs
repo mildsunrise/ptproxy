@@ -180,10 +180,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 			.build()?),
 	};
 
+	let mut http_connector = hyper::client::connect::HttpConnector::new();
+	// FIXME: make configurable
+	http_connector.set_keepalive(Some(Duration::from_millis(15000)));
+	http_connector.set_nodelay(true);
+
 	let http_client = hyper::Client::builder()
 		.http1_title_case_headers(true)
 		.set_host(false)
-		.build_http::<hyper::Body>();
+		.build(http_connector);
 
 	// start QUIC endpoint
 
@@ -431,7 +436,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 			}
 		});
 		Server::bind(&listener_addr)
-        	.http1_title_case_headers(true)
+			.tcp_nodelay(true) // FIXME: make configurable
+			.http1_title_case_headers(true)
 			.serve(make_svc)
 			.with_graceful_shutdown(stop_token.cancelled())
 			.await?;
