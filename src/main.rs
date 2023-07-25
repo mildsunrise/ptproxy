@@ -35,7 +35,7 @@ use crate::utils::{cancellable, drain_stream, with_background};
 static ALPN: &[u8] = b"h3";
 
 #[derive(StructOpt, Debug)]
-#[structopt(name = "ptproxy")]
+#[structopt(about)]
 struct Opt {
 	#[structopt(
 		long,
