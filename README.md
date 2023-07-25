@@ -104,8 +104,7 @@ Deploy ptproxy, the CA cert and the corresponding certificate & key to each end.
    ~~~ toml
    [general]
    mode = "Client"
-   # hostname of the other peer
-   hostname = "bar.example.org"
+   peer_hostname = "bar.example.org"
    # where to listen for HTTP/1.1 requests
    http_bind_address = "127.0.0.1:20080"
 
@@ -122,8 +121,7 @@ Deploy ptproxy, the CA cert and the corresponding certificate & key to each end.
    ~~~ toml
    [general]
    mode = "Server"
-   # hostname of the other peer
-   hostname = "foo.example.org"
+   peer_hostname = "foo.example.org"
    # where to send requests from the peer to
    http_connect_address = "localhost:8081"
 

@@ -117,7 +117,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	let server_config = {
 		let cert_verifier = Arc::new(crate::utils::StrictClientCertVerifier {
 			inner: AllowAnyAuthenticatedClient::new(roots.clone()),
-			server_name: general.hostname.as_str().try_into()?,
+			server_name: general.peer_hostname.as_str().try_into()?,
 		});
 		let mut tls_config = rustls::ServerConfig::builder()
 			.with_safe_default_cipher_suites()
@@ -143,7 +143,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		general
 			.http_connect_address
 			.clone()
-			.unwrap_or(general.hostname.clone()),
+			.unwrap_or(general.peer_hostname.clone()),
 		general.quic_port,
 	);
 
@@ -251,7 +251,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 			.ok_or("resolution found no addresses")?;
 
 		// attempt to establish QUIC connection
-		let quinn_connection = endpoint.connect(addr, &general.hostname)?.await?;
+		let quinn_connection = endpoint.connect(addr, &general.peer_hostname)?.await?;
 		info!("connection {} established", quinn_connection.stable_id());
 
 		// create HTTP/3 connection

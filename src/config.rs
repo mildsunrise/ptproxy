@@ -28,7 +28,7 @@ pub struct GeneralConfig {
 
 	/// Hostname to match in the other peer's certificate.
 	/// **Required**
-	pub hostname: String,
+	pub peer_hostname: String,
 
 	/// UDP port where the QUIC server listens. In server mode, this determines the port to bind the socket at;
 	/// in client mode, this determines the port to connect to.
@@ -42,8 +42,8 @@ pub struct GeneralConfig {
 	pub bind_address: IpAddr,
 
 	/// Only valid in client mode: overrides the address to connect to the peer over QUIC.
-	/// **Default:** uses the value of `hostname`
-	pub peer_hostname: Option<String>,
+	/// **Default:** uses the value of `peer_hostname`
+	pub connect_address: Option<String>,
 
 	/// Only valid in client mode: socket address to bind the listening HTTP/1.1 endpoint at.
 	/// **Default:** `[::1]:20080`
