@@ -8,7 +8,7 @@
     + [What's wrong with existing reverse proxies?](#whats-wrong-with-existing-reverse-proxies)
     + [What's this again?](#whats-this-again)
   * [Usage](#usage)
-    + [Prerrequisites](#prerrequisites)
+    + [Prerequisites](#prerequisites)
     + [Initial setup](#initial-setup)
     + [Tuning](#tuning)
 
@@ -62,13 +62,13 @@ Most reverse proxies don't support the described usecase (a point-to-point link)
 
  - Support for HTTP/3 is also lacking in general, and even when the proxy supports it, it may not offer it as option for upstream requests (which is what we need here).
 
- - Configuration for this usecase is unintuitive and could have pitfalls (nginx for example does not validate upstream's certificate by default, supports compressing responses but not requests, doesn't enable TCP keepalive by default, needs clearing the `Connection` header for keepalive to be actually in place, needs a set of identically named directives on different modules to be added to both ends...).
+ - Configuration for this usecase is unintuitive and often has pitfalls (nginx for example does not validate upstream's certificate by default, supports compressing responses but not requests, doesn't enable TCP keepalive by default, needs clearing the `Connection` header for keepalive to be actually in place, needs a set of identically named directives on different modules to be added to both ends...).
 
  - The HTTP session isn't established until the first request(s) arrive, incurring additional latency for those. Also for nginx, the session isn't kept alive forever but for a default of 1h (it could be made to be infinite by touching several settings in both ends, but this isn't recommended because of the design of the server).
 
 ### What's this again?
 
-ptproxy is a reverse proxy designed specifically for the use case of point-to-point links. It's meant to be portable, offer good control over the transport, easy to set up in both ends and relatively lightweight (though throughput isn't the priority). In the future it could support niche features such as reporting metrics of the established session, sessions against different servers, multiplexing different endpoints over the same session, ACLs...
+ptproxy is a reverse proxy designed specifically for the use case of point-to-point links. It's meant to be portable, offer good control over the transport, easy to set up in both ends and relatively lightweight (though throughput isn't the main priority). In the future it could support niche features such as reporting metrics of the established session, sessions against different servers, multiplexing different endpoints over the same session, ACLs...
 
 Right now ptproxy only supports HTTP/3 as transport across instances. In addition to the transport improvements mentioned above, being userspace-based gives us better control over all tweaks independently of the OS. An important downside is that offload optimizations (both in kernel, hypervisors and routers) are much more developed around TCP than UDP.
 
@@ -82,17 +82,17 @@ ptproxy is written in Rust for:
 
 > **⚠️ Warning:** while usable, this is still in the proof-of-concept stage, and lacks support for many minor and not-so-minor features (like WebSocket proxying, or the `X-Forwarded-For` / `Forwarded` headers). Use at your own risk.
 
-### Prerrequisites
+### Prerequisites
 
-To install ptproxy, download the latest prebuilt production binary from the [releases][] section and drop it under e.g. `/usr/bin`. The binary depends only on glibc 2.29, so it should be reasonably portable.
+To install ptproxy, download the latest production binary from the [releases][] section and drop it under e.g. `/usr/bin`. The binary depends only on glibc 2.29+, so it's reasonably portable.
 
-> Alternatively, install [rustup][] and switch to the nightly toolchain (`rustup default nightly`), clone this project and run `cargo build --release`. The resulting binary will be `target/release/ptproxy`.
+> Alternatively, install [rustup][] and switch to the nightly toolchain (`rustup default nightly`), clone this project and run `cargo build --release`. The resulting binary is at `target/release/ptproxy`.
 
 ptproxy peers mutually verify each other, so you'll need client certificates for one host and server certificates for the other. I recommend using [mkcert][] to generate these certs:
 
 ~~~ bash
-$ mkcert -client foo.localhost
-$ mkcert bar.localhost
+$ mkcert -client foo.example.org
+$ mkcert bar.example.org
 ~~~
 
 ### Initial setup
@@ -105,7 +105,7 @@ Deploy ptproxy, the CA cert and the corresponding certificate & key to each end.
    [general]
    mode = "Client"
    # hostname of the other peer
-   hostname = "bar.localhost"
+   hostname = "bar.example.org"
    # where to listen for HTTP/1.1 requests
    http_bind_address = "127.0.0.1:20080"
 
@@ -113,8 +113,8 @@ Deploy ptproxy, the CA cert and the corresponding certificate & key to each end.
    # CA to validate the peer against
    ca = "rootCA.pem"
    # certificate to present to the other peer
-   cert = "foo.localhost-client.pem"
-   key = "foo.localhost-client-key.pem"
+   cert = "foo.example.org-client.pem"
+   key = "foo.example.org-client-key.pem"
    ~~~
 
  - **server side** (where requests are served):
@@ -123,7 +123,7 @@ Deploy ptproxy, the CA cert and the corresponding certificate & key to each end.
    [general]
    mode = "Server"
    # hostname of the other peer
-   hostname = "foo.localhost"
+   hostname = "foo.example.org"
    # where to send requests from the peer to
    http_connect_address = "localhost:8081"
 
@@ -131,8 +131,8 @@ Deploy ptproxy, the CA cert and the corresponding certificate & key to each end.
    # CA to validate the peer against
    ca = "rootCA.pem"
    # certificate to present to the other peer
-   cert = "bar.localhost.pem"
-   key = "bar.localhost-key.pem"
+   cert = "bar.example.org.pem"
+   key = "bar.example.org-key.pem"
    ~~~
 
 ptproxy uses port **20010** for the HTTP/3 tunnel between the peers, but it can be customized by setting the `quic_port` parameter in both ends. Make sure this UDP port is open on the server end. Then start ptproxy and, if everything is correct, you should see this:

@@ -4,7 +4,7 @@ use std::{path::PathBuf, net::{IpAddr, SocketAddr}};
 /// Root configuration for ptproxy.
 #[derive(Deserialize, Debug)]
 pub struct Config {
-	/// Mode of operation and upstream parameters.
+	/// Mode of operation and peer + upstream parameters.
 	/// **Required**
 	pub general: GeneralConfig,
 
@@ -18,6 +18,8 @@ pub struct Config {
 	pub transport: TransportConfig,
 }
 
+/// Parameters describing general proxy operation: mode, and connection details
+/// for the other peer and the source / target for HTTP/1.1 requests.
 #[derive(Deserialize, Debug)]
 pub struct GeneralConfig {
 	/// Whether to connect to the target peer (`Client`), or accept connections from it (`Server`).
@@ -91,11 +93,11 @@ pub struct TlsConfig {
 	pub key: PathBuf,
 }
 
-/// Configuration of the [transport configuration](quinn::TransportConfig`) of the connection with the peer.
+/// Configuration of the [transport configuration](`quinn::TransportConfig`) of the connection with the peer.
 /// These parameters are usually kept identical on both sides.
 #[derive(Deserialize, Debug, Default)]
 pub struct TransportConfig {
-	/// **Application:** Time to wait since last connection [attempt] failed before attempting a new connection, in milliseconds.
+	/// **Application:** Time to wait since last connection \[attempt\] failed before attempting a new connection, in milliseconds.
 	/// Only used in client mode.
 	/// **Default:** 1000
 	pub connect_interval: Option<u64>,
