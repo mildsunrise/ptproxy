@@ -180,10 +180,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 			.build()?),
 	};
 
+	let tcp_nodelay = config
+		.system
+		.tcp_nodelay
+		.unwrap_or(config::default_tcp_nodelay());
+
 	let mut http_connector = hyper::client::connect::HttpConnector::new();
 	// FIXME: make configurable
 	http_connector.set_keepalive(Some(Duration::from_millis(15000)));
-	http_connector.set_nodelay(true);
+	http_connector.set_nodelay(tcp_nodelay);
 
 	let http_client = hyper::Client::builder()
 		.http1_title_case_headers(true)
@@ -436,7 +441,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 			}
 		});
 		Server::bind(&listener_addr)
-			.tcp_nodelay(true) // FIXME: make configurable
+			.tcp_nodelay(tcp_nodelay)
 			.http1_title_case_headers(true)
 			.serve(make_svc)
 			.with_graceful_shutdown(stop_token.cancelled())

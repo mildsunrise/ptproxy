@@ -201,8 +201,17 @@ pub struct SystemConfig {
 	/// Only used in client mode.
 	/// <br> **Default:** 1000
 	pub connect_interval: Option<u64>,
+
+	/// Whether to enable the `TCP_NODELAY` option on incoming (client mode) or outgoing (server mode) HTTP/1.1 sockets.
+	/// This helps avoid extra latency introduced by delayed ACKs, for example.
+	/// <br> **Default:** true
+	pub tcp_nodelay: Option<bool>,
 }
 
 pub fn default_connect_interval() -> u64 {
 	1000
+}
+
+pub fn default_tcp_nodelay() -> bool {
+	true
 }
