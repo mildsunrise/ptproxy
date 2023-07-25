@@ -11,6 +11,7 @@
     + [Prerequisites](#prerequisites)
     + [Initial setup](#initial-setup)
     + [Tuning](#tuning)
+    + [systemd service](#systemd-service)
 
 ## Motivation
 
@@ -177,6 +178,49 @@ initial_window = 487500
 In general it is best to keep the transport parameters consistent on both sides.
 
 It's highly recommended to use a stress-testing tool like [ab][] to get a feel of the tunnel's performance. While you might expect the latency to equal 1 RTT once properly configured, it will likely be more due to *packet pacing*, a layer that aims to reduce data bursts to prevent data loss. It shapes the traffic to conform to the bandwidth determined by the congestion control window.
+
+### systemd service
+
+To deploy this as a systemd service, it's recommended to use the template / instance feature to allow for multiple tunnels to be managed easily.
+Create `/usr/lib/systemd/system/ptproxy@.service` with the following contents:
+
+~~~ ini
+[Unit]
+Description=point-to-point HTTP/1.1 reverse proxy (%I)
+After=network.target
+After=network-online.target
+Wants=network-online.target
+Documentation=https://github.com/mildsunrise/ptproxy
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/ptproxy -c /etc/ptproxy/%i.toml
+User=ptproxy
+Group=ptproxy
+ProtectSystem=true
+ProtectHome=true
+RestartSec=5s
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+~~~
+
+Then create a system user for ptproxy, a configuration directory, and reload systemd:
+
+~~~ bash
+useradd --system ptproxy
+mkdir /etc/ptproxy
+systemctl daemon-reload
+~~~
+
+Place your TLS files and configuration at `/etc/ptproxy/` and, assuming your configuration is named `foo.toml`, you can enable & start the tunnel with:
+
+~~~ bash
+systemctl enable --now ptproxy@foo
+~~~
+
+
 
 [rustup]: https://rustup.rs
 [config-docs]: https://ptproxy.alba.sh/ptproxy/config/struct.Config.html
