@@ -16,6 +16,11 @@ pub struct Config {
 	/// <br> **Optional**
 	#[serde(default)]
 	pub transport: TransportConfig,
+
+	/// Limits, timeouts, intervals and other parameters that affect operation of ptproxy.
+	/// <br> **Optional**
+	#[serde(default)]
+	pub system: SystemConfig,
 }
 
 /// Parameters describing general proxy operation: mode, and connection details
@@ -97,11 +102,6 @@ pub struct TlsConfig {
 /// These parameters are usually kept identical on both sides.
 #[derive(Deserialize, Debug, Default)]
 pub struct TransportConfig {
-	/// **Application:** Time to wait since last connection \[attempt\] failed before attempting a new connection, in milliseconds.
-	/// Only used in client mode.
-	/// <br> **Default:** 1000
-	pub connect_interval: Option<u64>,
-
 	/// Maximum duration of inactivity to accept before considering the connection dead, in milliseconds.
 	/// The true idle timeout is the minimum of this and the peer’s own max idle timeout.
 	/// See [`quinn::TransportConfig::max_idle_timeout`].
@@ -177,10 +177,6 @@ impl Default for CongestionAlgorithm {
 	}
 }
 
-pub fn default_connect_interval() -> u64 {
-	1000
-}
-
 pub fn default_max_idle_timeout() -> u64 {
 	5000
 }
@@ -195,4 +191,18 @@ pub fn default_max_concurrent_http_streams() -> u32 {
 
 pub fn default_stream_receive_window() -> u64 {
 	1_000_000
+}
+
+/// Limits, timeouts, intervals and other parameters that affect operation of ptproxy. This includes
+/// proxy behavior, integration with the service manager, and interaction with HTTP/1.1 upstreams / downstreams.
+#[derive(Deserialize, Debug, Default)]
+pub struct SystemConfig {
+	/// Time to wait since last QUIC connection \[attempt\] failed before attempting a new connection, in milliseconds.
+	/// Only used in client mode.
+	/// <br> **Default:** 1000
+	pub connect_interval: Option<u64>,
+}
+
+pub fn default_connect_interval() -> u64 {
+	1000
 }

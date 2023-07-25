@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	let general = config.general;
 	let connect_interval = Duration::from_millis(
 		config
-			.transport
+			.system
 			.connect_interval
 			.unwrap_or(config::default_connect_interval()),
 	);
