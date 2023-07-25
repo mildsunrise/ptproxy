@@ -141,7 +141,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	// (not resolved yet, we'll do that each connection attempt)
 	let client_addr = (
 		general
-			.http_connect_address
+			.connect_address
 			.clone()
 			.unwrap_or(general.peer_hostname.clone()),
 		general.quic_port,
