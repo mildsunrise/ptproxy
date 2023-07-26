@@ -195,6 +195,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		.set_host(false)
 		.build(http_connector);
 
+	let http_server = Server::try_bind(&listener_addr)?
+		.tcp_nodelay(tcp_nodelay)
+		.http1_title_case_headers(true);
+
 	// start QUIC endpoint
 
 	let socket = std::net::UdpSocket::bind(endpoint_addr)?;
@@ -440,9 +444,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 				Ok::<_, Infallible>(service_fn(handle_request_client))
 			}
 		});
-		Server::bind(&listener_addr)
-			.tcp_nodelay(tcp_nodelay)
-			.http1_title_case_headers(true)
+		http_server
 			.serve(make_svc)
 			.with_graceful_shutdown(stop_token.cancelled())
 			.await?;
