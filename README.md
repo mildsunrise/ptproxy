@@ -181,7 +181,7 @@ It's highly recommended to use a stress-testing tool like [ab][] to get a feel o
 
 ### systemd service
 
-To deploy this as a systemd service, it's recommended to use the template / instance feature to allow for multiple tunnels to be managed easily.
+To deploy this as a systemd service, it's recommended to use the [service template feature][systemd-service-templates] to allow for multiple tunnels to be managed easily.
 Create `/usr/lib/systemd/system/ptproxy@.service` with the following contents:
 
 ~~~ ini
@@ -195,10 +195,9 @@ Documentation=https://github.com/mildsunrise/ptproxy
 [Service]
 Type=exec
 ExecStart=/usr/bin/ptproxy -c /etc/ptproxy/%i.toml
-User=ptproxy
-Group=ptproxy
-ProtectSystem=true
-ProtectHome=true
+KillSignal=SIGINT
+DynamicUser=true
+TasksMax=128
 RestartSec=5s
 Restart=on-failure
 
@@ -211,6 +210,9 @@ Then create a system user for ptproxy, a configuration directory, and reload sys
 ~~~ bash
 useradd --system ptproxy
 mkdir /etc/ptproxy
+mkdir /etc/ptproxy/private
+chown ptproxy:ptproxy /etc/ptproxy/private
+chmod og-rx /etc/ptproxy/private
 systemctl daemon-reload
 ~~~
 
@@ -229,3 +231,4 @@ systemctl enable --now ptproxy@foo
 [releases]: https://github.com/mildsunrise/ptproxy/releases
 [congestion control]: https://quicwg.org/base-drafts/rfc9002.html
 [ab]: https://httpd.apache.org/docs/2.4/programs/ab.html
+[systemd-service-templates]: https://www.freedesktop.org/software/systemd/man/systemd.service.html#Service%20Templates
