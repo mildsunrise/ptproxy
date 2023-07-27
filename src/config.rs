@@ -206,6 +206,13 @@ pub struct SystemConfig {
 	/// This helps avoid extra latency introduced by delayed ACKs, for example.
 	/// <br> **Default:** true
 	pub tcp_nodelay: Option<bool>,
+
+	/// If enabled and service manager integration is in use, ptproxy will wait for the first connection attempt
+	/// to finish (successfully or not) before sending signalling the service as *ready*. This gives a best-effort
+	/// opportunity for the tunnel to establish before starting dependencies, for example.
+	/// Only used in client mode.
+	/// <br> **Default:** true
+	pub wait_for_first_attempt: Option<bool>,
 }
 
 pub fn default_connect_interval() -> u64 {
@@ -213,5 +220,9 @@ pub fn default_connect_interval() -> u64 {
 }
 
 pub fn default_tcp_nodelay() -> bool {
+	true
+}
+
+pub fn default_wait_for_first_attempt() -> bool {
 	true
 }

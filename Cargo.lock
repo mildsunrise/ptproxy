@@ -609,6 +609,7 @@ dependencies = [
  "rustls",
  "rustls-native-certs",
  "rustls-pemfile",
+ "sd-notify",
  "serde",
  "socket2 0.5.3",
  "structopt",
@@ -852,6 +853,12 @@ dependencies = [
  "ring",
  "untrusted",
 ]
+
+[[package]]
+name = "sd-notify"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "621e3680f3e07db4c9c2c3fb07c6223ab2fab2e54bd3c04c3ae037990f428c32"
 
 [[package]]
 name = "security-framework"

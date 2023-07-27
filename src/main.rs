@@ -6,9 +6,10 @@ use std::{
 	error::Error,
 	net::SocketAddr,
 	path::PathBuf,
-	sync::{Arc, Mutex},
+	sync::{Arc, Mutex, atomic::AtomicBool},
 	time::Duration,
 };
+use std::sync::atomic::Ordering::SeqCst;
 
 use bytes::{Bytes, Buf};
 use futures::stream::FuturesUnordered;
@@ -20,6 +21,7 @@ use hyper::{
 };
 use rand::{seq::IteratorRandom, thread_rng};
 use rustls::server::AllowAnyAuthenticatedClient;
+use sd_notify::{notify, NotifyState};
 use structopt::StructOpt;
 use tokio::{net::lookup_host, select, time::sleep, try_join};
 use tokio_util::sync::CancellationToken;
@@ -217,20 +219,41 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		endpoint
 	};
 
-	// start listening for shutdown
+	// start listening for shutdown and sending watchdog
+
+	let ready_sent = Arc::new(AtomicBool::new(false));
+
+	let send_status = move |message: &str, is_ready: bool| {
+		let states = [
+			NotifyState::Status(message),
+			NotifyState::Ready,
+		];
+		let add_ready = is_ready && !ready_sent.swap(true, SeqCst);
+		let states = &states[0..(1 + add_ready as usize)];
+		let _ = notify(false, &states);
+	};
 
 	let stop_token = CancellationToken::new();
 	{
 		let stop_token = stop_token.clone();
+		let send_status = send_status.clone();
 		tokio::spawn(async move {
 			tokio::signal::ctrl_c().await.unwrap();
 			info!("stopping server...");
+			send_status("stopping server", false);
 			stop_token.cancel();
+			let _ = notify(false, &[NotifyState::Stopping]);
+
 			// a second ctrl_c exits immediately
 			tokio::signal::ctrl_c().await.unwrap();
 			std::process::exit(130);
 		});
 	}
+
+	let wait_for_first_attempt = config
+		.system
+		.wait_for_first_attempt
+		.unwrap_or(config::default_wait_for_first_attempt());
 
 	// main body: client
 
@@ -282,7 +305,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		*state_guard.0.lock().unwrap() = Some(EstablishedConnection {
 			send_request: Some(send_request),
 		});
-		info!("tunnel ready");
+		info!("tunnel established");
+		send_status("tunnel established", true);
 
 		// have we begun a connection close from our end? (equivalent to state_guard's send_request.is_some())
 		let mut have_closed = false;
@@ -308,9 +332,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 	};
 
 	let client_loop = || async {
+		send_status("attempting first connection", !wait_for_first_attempt);
+
 		// client_iteration returns Ok(()) to signal shutdown
 		while let Err(error) = client_iteration().await {
 			error!("client connection failed: {}", error);
+			send_status(&format!("client connection failed: {}", error), true);
 			sleep(connect_interval).await;
 		}
 		Ok::<(), Box<dyn Error>>(())
@@ -640,6 +667,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 	let server_loop = || async {
 		let mut connections = FuturesUnordered::new();
+		send_status("accepting connections", true);
 
 		loop {
 			// wait for a connection attempt to arrive, unless shutdown
@@ -662,6 +690,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		}
 
 		// wait for outstanding connections to be closed
+		send_status("waiting for outstanding connections to close", false);
 		drain_stream(&mut connections).await;
 	};
 
@@ -685,6 +714,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 	// wait for the (closed) connections to completely extinguish
 	info!("waiting for endpoint to finish...");
+	send_status("waiting for endpoint to finish", false);
 	endpoint.wait_idle().await;
 
 	Ok(())

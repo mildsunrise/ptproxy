@@ -12,6 +12,10 @@
     + [Initial setup](#initial-setup)
     + [Tuning](#tuning)
     + [systemd service](#systemd-service)
+  * [Special features](#special-features)
+    + [systemd integration](#systemd-integration)
+    + [Reconnection](#reconnection)
+
 
 ## Motivation
 
@@ -78,6 +82,7 @@ ptproxy is written in Rust for:
  - **Portability:** HTTP/3 support is a mess in mainland Linux distros thanks to OpenSSL, and Rust avoids dependency on system libraries altogether. It also has much better crossplatform support.
 
  - **Control:** Rust's HTTP/3 ecosystem offers much more control, with most components allowing dependency injection, meaning internal knobs are less likely to be left unexposed. The stack is fully async and even compatible with custom event loops, should we need them in the future.
+
 
 ## Usage
 
@@ -193,7 +198,7 @@ Wants=network-online.target
 Documentation=https://github.com/mildsunrise/ptproxy
 
 [Service]
-Type=exec
+Type=notify
 ExecStart=/usr/bin/ptproxy -c /etc/ptproxy/%i.toml
 KillSignal=SIGINT
 DynamicUser=true
@@ -223,6 +228,25 @@ systemctl enable --now ptproxy@foo
 ~~~
 
 
+## Special features
+
+### systemd integration
+
+If ptproxy is launched from systemd (or another service manager supporting the [notify protocol][systemd-notify]), it will do the following:
+
+ - Signal `READY` and `STOPPING` states accordingly.
+
+   In client mode, `READY` is by default deferred until the first connection attempt ends (successfully or not). This gives a reasonable opportunity for the tunnel to establish before starting dependent units. Because connection attempt time is mostly bounded by `max_idle_timeout` (see below), the unit will not stay in 'starting' state indefinitely. See the `wait_for_first_attempt` option.
+
+ - Report server status. In server mode this amounts to whether the server has started or if it's stopping (waiting for outstanding connections to close). In client mode, ptproxy also reports the status of the tunnel (and in case it's down, the most recent failure reason).
+
+### Reconnection
+
+ptproxy will constantly attempt to connect to the server, sleeping for `connect_interval` milliseconds between connection attempts.
+
+In the initial phase of a connection attempt before contact has been made with the other peer, the `max_idle_timeout` transport parameter governs how much time needs to pass before the attempt fails (at which point ptproxy will go to sleep and later start another attempt). Once the connection successfully establishes, `max_idle_timeout` is combined with the other peer's to determine how much to wait without traffic to declare the connection dead (at which point ptproxy goes to sleep and later attempts to reconnect).
+
+
 
 [rustup]: https://rustup.rs
 [config-docs]: https://ptproxy.alba.sh/ptproxy/config/struct.Config.html
@@ -232,3 +256,4 @@ systemctl enable --now ptproxy@foo
 [congestion control]: https://quicwg.org/base-drafts/rfc9002.html
 [ab]: https://httpd.apache.org/docs/2.4/programs/ab.html
 [systemd-service-templates]: https://www.freedesktop.org/software/systemd/man/systemd.service.html#Service%20Templates
+[systemd-notify]: https://www.freedesktop.org/software/systemd/man/sd_notify.html
