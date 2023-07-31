@@ -3,6 +3,7 @@ use std::{path::PathBuf, net::{IpAddr, SocketAddr}};
 
 /// Root configuration for ptproxy.
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
 	/// Mode of operation and peer + upstream parameters.
 	/// <br> **Required**
@@ -26,6 +27,7 @@ pub struct Config {
 /// Parameters describing general proxy operation: mode, and connection details
 /// for the other peer and the source / target for HTTP/1.1 requests.
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct GeneralConfig {
 	/// Whether to connect to the target peer (`Client`), or accept connections from it (`Server`).
 	/// <br> **Required**
@@ -79,6 +81,7 @@ pub fn default_http_bind_address() -> SocketAddr {
 
 /// TLS identity settings for the QUIC endpoint.
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct TlsConfig {
 	/// Trusted root CA certificates to verify the certificate of the peer against.
 	/// <br> **Default:** use system root CA store
@@ -101,6 +104,7 @@ pub struct TlsConfig {
 /// Configuration of the [transport configuration](`quinn::TransportConfig`) of the connection with the peer.
 /// These parameters are usually kept identical on both sides.
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct TransportConfig {
 	/// Maximum duration of inactivity to accept before considering the connection dead, in milliseconds.
 	/// The true idle timeout is the minimum of this and the peer’s own max idle timeout.
@@ -196,6 +200,7 @@ pub fn default_stream_receive_window() -> u64 {
 /// Limits, timeouts, intervals and other parameters that affect operation of ptproxy. This includes
 /// proxy behavior, integration with the service manager, and interaction with HTTP/1.1 upstreams / downstreams.
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SystemConfig {
 	/// Time to wait since last QUIC connection \[attempt\] failed before attempting a new connection, in milliseconds.
 	/// Only used in client mode.
