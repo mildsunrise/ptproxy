@@ -201,6 +201,7 @@ Documentation=https://github.com/mildsunrise/ptproxy
 Type=notify
 ExecStart=/usr/bin/ptproxy -c /etc/ptproxy/%i.toml
 KillSignal=SIGINT
+WatchdogSec=6s
 DynamicUser=true
 TasksMax=128
 RestartSec=5s
@@ -239,6 +240,12 @@ If ptproxy is launched from systemd (or another service manager supporting the [
    In client mode, `READY` is by default deferred until the first connection attempt ends (successfully or not). This gives a reasonable opportunity for the tunnel to establish before starting dependent units. Because connection attempt time is mostly bounded by `max_idle_timeout` (see below), the unit will not stay in 'starting' state indefinitely. See the `wait_for_first_attempt` option.
 
  - Report server status. In server mode this amounts to whether the server has started or if it's stopping (waiting for outstanding connections to close). In client mode, ptproxy also reports the status of the tunnel (and in case it's down, the most recent failure reason).
+
+ - Sends keep-alive pings if watchdog functionality is enabled in the service manager. This is the recommended setup, so that the service gets restarted in the event of a deadlock, infinite loop or other silent failure. Please open a bug if that happens.
+
+   Keep-alive pings are currently sent from the thread running the main task (client / server loop), and theoretically it could happen that deadlocks occur exclusively on other threads and stay undetected. We could improve this by having the main loop check upon the rest of the tasks, but in practice the risk of such a thing happening while also preventing the service from operating is very small.
+
+   The interval for keep-alive pings is derived from the watchdog limit (given in the `WATCHDOG_USEC` environment variable) divided by `watchdog_factor`.
 
 ### Reconnection
 

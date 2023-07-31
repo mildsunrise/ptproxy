@@ -250,6 +250,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		});
 	}
 
+	let watchdog_interval = {
+		let watchdog_factor = config.system.watchdog_factor.unwrap_or(config::default_watchdog_factor());
+		let watchdog_usec = {
+			let mut result = 0;
+			sd_notify::watchdog_enabled(true, &mut result).then_some(result)
+		};
+		watchdog_usec.map(|x| Duration::from_secs_f32((x as f32) / (watchdog_factor * 1e6)))
+	};
+
+	let watchdog_loop = async {
+		// FIXME: this runs in the main tokio task, but it should in turn get pings
+		// from the tasks spawned to handle requests in case a deadlock occurs there
+		if let Some(watchdog_interval) = watchdog_interval {
+			loop {
+				let _ = notify(false, &[NotifyState::Watchdog]);
+				sleep(watchdog_interval).await;
+			}
+		}
+	};
+
 	let wait_for_first_attempt = config
 		.system
 		.wait_for_first_attempt
@@ -696,28 +716,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 	// run the thing!
 
-	info!("started endpoint at {}", endpoint.local_addr()?);
+	let main_loop = async {
+		info!("started endpoint at {}", endpoint.local_addr()?);
 
-	match general.mode {
-		PeerMode::Client => {
-			// start HTTP/1.1 server + connection establishing loop
-			try_join!(listener_loop(), client_loop())?;
+		match general.mode {
+			PeerMode::Client => {
+				// start HTTP/1.1 server + connection establishing loop
+				try_join!(listener_loop(), client_loop())?;
+			}
+			PeerMode::Server => {
+				// start HTTP/3 server
+				server_loop().await;
+			}
 		}
-		PeerMode::Server => {
-			// start HTTP/3 server
-			server_loop().await;
-		}
-	}
 
-	// close any remaining QUIC connection in the endpoint (should never happen, but just in case)
-	endpoint.close(Code::H3_NO_ERROR.value().try_into().unwrap(), &[]);
+		// close any remaining QUIC connection in the endpoint (should never happen, but just in case)
+		endpoint.close(Code::H3_NO_ERROR.value().try_into().unwrap(), &[]);
 
-	// wait for the (closed) connections to completely extinguish
-	info!("waiting for endpoint to finish...");
-	send_status("waiting for endpoint to finish", false);
-	endpoint.wait_idle().await;
+		// wait for the (closed) connections to completely extinguish
+		info!("waiting for endpoint to finish...");
+		send_status("waiting for endpoint to finish", false);
+		endpoint.wait_idle().await;
 
-	Ok(())
+		Ok(())
+	};
+
+	with_background(main_loop, watchdog_loop).await
 }
 
 // header manipulation

@@ -213,6 +213,11 @@ pub struct SystemConfig {
 	/// Only used in client mode.
 	/// <br> **Default:** true
 	pub wait_for_first_attempt: Option<bool>,
+
+	/// If service manager integration is in use, and this service has been requested to send periodic keepalives,
+	/// the watchdog timeout limit is divided by this factor to determine the interval at which to send them.
+	/// <br> **Default:** 1.5
+	pub watchdog_factor: Option<f32>,
 }
 
 pub fn default_connect_interval() -> u64 {
@@ -225,4 +230,8 @@ pub fn default_tcp_nodelay() -> bool {
 
 pub fn default_wait_for_first_attempt() -> bool {
 	true
+}
+
+pub fn default_watchdog_factor() -> f32 {
+	1.5
 }
