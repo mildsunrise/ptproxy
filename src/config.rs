@@ -53,7 +53,7 @@ pub struct GeneralConfig {
 	pub connect_address: Option<String>,
 
 	/// Only valid in client mode: socket address to bind the listening HTTP/1.1 endpoint at.
-	/// <br> **Default:** `[::1]:20080`
+	/// <br> **Default:** `[::]:20080`
 	pub http_bind_address: Option<SocketAddr>,
 
 	/// Only valid in server mode: socket address to send HTTP/1.1 requests (received from the peer) to.
@@ -76,7 +76,7 @@ fn default_bind_address() -> IpAddr {
 }
 
 pub fn default_http_bind_address() -> SocketAddr {
-	"[::1]:20080".parse().unwrap()
+	"[::]:20080".parse().unwrap()
 }
 
 /// TLS identity settings for the QUIC endpoint.
