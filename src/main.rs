@@ -48,8 +48,18 @@ struct Opt {
 	pub config: PathBuf,
 }
 
+// we override the real main to catch application errors and report as systemd status too
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+	let result = real_main().await;
+	if let Err(ref err) = result {
+		let msg = format!("failed: {}", err);
+		let _ = notify(false, &[NotifyState::Status(&msg)]);
+	}
+	result
+}
+
+async fn real_main() -> Result<(), Box<dyn Error>> {
 	tracing_subscriber::fmt()
 		.with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
 		.with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
