@@ -207,9 +207,12 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 		.set_host(false)
 		.build(http_connector);
 
-	let http_server = Server::try_bind(&listener_addr)?
-		.tcp_nodelay(tcp_nodelay)
-		.http1_title_case_headers(true);
+	let http_server = match general.mode {
+		PeerMode::Server => None,
+		PeerMode::Client => Some(Server::try_bind(&listener_addr)?
+			.tcp_nodelay(tcp_nodelay)
+			.http1_title_case_headers(true))
+	};
 
 	// start QUIC endpoint
 
@@ -502,6 +505,7 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 			}
 		});
 		http_server
+			.unwrap()
 			.serve(make_svc)
 			.with_graceful_shutdown(stop_token.cancelled())
 			.await?;
