@@ -2,6 +2,7 @@ use std::{sync::Arc, time::Duration, path::Path, error::Error, pin::Pin, future:
 
 use futures::{future::poll_fn, Stream};
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 use crate::config;
 
@@ -151,11 +152,22 @@ pub fn configure_endpoint_socket(
 	config: &config::TransportConfig,
 ) -> Result<(), Box<dyn Error>> {
 	let socket = socket2::SockRef::from(&std_socket);
+
 	if let Some(value) = config.socket_receive_buffer_size {
 		socket.set_recv_buffer_size(value)?;
+		let real_value = socket.recv_buffer_size()?;
+		if value != real_value {
+			warn!("the requested UDP receive buffer size of {} ended up at {}, likely due to OS limits", value, real_value);
+		}
 	}
+
 	if let Some(value) = config.socket_send_buffer_size {
 		socket.set_send_buffer_size(value)?;
+		let real_value = socket.send_buffer_size()?;
+		if value != real_value {
+			warn!("the requested UDP send buffer size of {} ended up at {}, likely due to OS limits", value, real_value);
+		}
 	}
+
 	Ok(())
 }
