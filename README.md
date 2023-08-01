@@ -12,9 +12,10 @@
     + [Initial setup](#initial-setup)
     + [Tuning](#tuning)
     + [systemd service](#systemd-service)
-  * [Special features](#special-features)
+  * [Behavior](#behavior)
     + [systemd integration](#systemd-integration)
-    + [Reconnection](#reconnection)
+    + [Lifecycle](#lifecycle)
+    + [Proxying](#proxying)
 
 
 ## Motivation
@@ -229,7 +230,7 @@ systemctl enable --now ptproxy@foo
 ~~~
 
 
-## Special features
+## Behavior
 
 ### systemd integration
 
@@ -239,7 +240,7 @@ If ptproxy is launched from systemd (or another service manager supporting the [
 
    In client mode, `READY` is by default deferred until the first connection attempt ends (successfully or not). This gives a reasonable opportunity for the tunnel to establish before starting dependent units. Because connection attempt time is mostly bounded by `max_idle_timeout` (see below), the unit will not stay in 'starting' state indefinitely. See the `wait_for_first_attempt` option.
 
- - Report server status. In server mode this amounts to whether the server has started or if it's stopping (waiting for outstanding connections to close). In client mode, ptproxy also reports the status of the tunnel (and in case it's down, the most recent failure reason). In case of a failure, the error is also reported as status before exit.
+ - Report server status. In server mode this amounts to whether the server has started or if it's stopping (waiting for outstanding connections to close, see below). In client mode, ptproxy also reports the status of the tunnel (and in case it's down, the most recent failure reason). In case of a failure, the error is also reported as status before exit.
 
  - Sends keep-alive pings if watchdog functionality is enabled in the service manager. This is the recommended setup, so that the service gets restarted in the event of a deadlock, infinite loop or other silent failure. Please open a bug if that happens.
 
@@ -247,11 +248,48 @@ If ptproxy is launched from systemd (or another service manager supporting the [
 
    The interval for keep-alive pings is derived from the watchdog limit (given in the `WATCHDOG_USEC` environment variable) divided by `watchdog_factor`.
 
-### Reconnection
+### Lifecycle
 
 ptproxy will constantly attempt to connect to the server, sleeping for `connect_interval` milliseconds between connection attempts.
 
 In the initial phase of a connection attempt before contact has been made with the other peer, the `max_idle_timeout` transport parameter governs how much time needs to pass before the attempt fails (at which point ptproxy will go to sleep and later start another attempt). Once the connection successfully establishes, `max_idle_timeout` is combined with the other peer's to determine how much to wait without traffic to declare the connection dead (at which point ptproxy goes to sleep and later attempts to reconnect).
+
+When SIGINT is received, ptproxy stops accepting new connections / requests and waits for the current (in-flight) requests to be processed, and for the QUIC connection(s) to terminate, before shutting down. Receiving a second SIGINT causes ptproxy to exit immediately.
+
+### Proxying
+
+#### Message forwarding
+
+When a client-server pair is viewed as a black box, it strives to implement a minimal but [HTTP/1.1 compliant][http-message-forwarding] reverse proxy, which means:
+
+ - Connection / hop-by-hop headers are dropped
+   - This implies **no support for upgrade tunneling**, like WebSocket. HTTP/3 itself doesn't support this, but for the particular case of WebSocket it could be implemented in the future through [RFC9220][ws-over-http3].
+ - `Date` will be generated if not present on the response
+ - Chunked transfer is preserved, but all [chunk extensions][chunk-extensions] are dropped
+ - `Content-Length` is dropped when chunked transfer is in use
+
+Additionally there are some minor limitations because of either HTTP/3 or dependency constraints:
+
+ - Chunked transfer will be used if the original message didn't specify `Content-Length`
+ - `Host` is required in requests (as mandated by HTTP/1.1)
+ - [Requests with an absolute URL][absolute-form] (also called proxy requests) are rejected
+ - Header names are normalized to title case
+ - Headers may get reordered (but duplicate headers, i.e. headers having the same name, are guaranteed not to be reordered relative to one another)
+ - The response [reason phrase][reason-phrase] is lost and replaced with a standard one
+ - `CONNECT` requests, [message trailers][trailers] and [interim responses][interim-responses] not implemented yet
+ - Early responses (before the request body has finished streaming) not supported yet (response won't be proxied until request, could cause issues due to backpressure)
+
+#### Buffering
+
+The message body is currently streamed chunk-by-chunk without further buffering, preserving chunk framing if chunked transfer is in use, and applying backpressure in both directions.
+
+#### Errors
+
+If ptproxy encounters an error when proxying the request, and the response hasn't yet been sent, a synthetic response will be generated with `Server: ptproxy client` or `Server: ptproxy server` (depending on where the error originated) containing the error message as body.
+
+Status code will usually be 503 (if tunnel is not established at that time) or 502 (if request proxying was attempted but failed for some other reason, or origin response was rejected), but can be 400 or other 4xx in case the request was rejected because of invalid or unsupported data in the request.
+
+If the response head has already been sent (which can happen when the errors occurs while streaming the response body), the error will be logged and the HTTP/1.1 socket will be closed early to propagate the error condition.
 
 
 
@@ -264,3 +302,11 @@ In the initial phase of a connection attempt before contact has been made with t
 [ab]: https://httpd.apache.org/docs/2.4/programs/ab.html
 [systemd-service-templates]: https://www.freedesktop.org/software/systemd/man/systemd.service.html#Service%20Templates
 [systemd-notify]: https://www.freedesktop.org/software/systemd/man/sd_notify.html
+[http1.1]: https://www.rfc-editor.org/rfc/rfc9112
+[http-message-forwarding]: https://www.rfc-editor.org/rfc/rfc9110#name-message-forwarding
+[chunk-extensions]: https://www.rfc-editor.org/rfc/rfc9112#name-chunk-extensions
+[absolute-form]: https://www.rfc-editor.org/rfc/rfc9112#name-absolute-form
+[trailers]: https://www.rfc-editor.org/rfc/rfc9112#name-chunked-trailer-section
+[reason-phrase]: https://www.rfc-editor.org/rfc/rfc9112#name-status-line
+[interim-responses]: https://www.rfc-editor.org/rfc/rfc9110#name-informational-1xx
+[ws-over-http3]: https://www.rfc-editor.org/rfc/rfc9220
