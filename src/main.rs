@@ -6,6 +6,7 @@ use std::{
 	error::Error,
 	net::SocketAddr,
 	path::PathBuf,
+	process::ExitCode,
 	sync::{Arc, Mutex, atomic::AtomicBool},
 	time::Duration,
 };
@@ -50,13 +51,15 @@ struct Opt {
 
 // we override the real main to catch application errors and report as systemd status too
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> ExitCode {
 	let result = real_main().await;
-	if let Err(ref err) = result {
-		let msg = format!("failed: {}", err);
+	if let Err(err) = result {
+		let msg = format!("failed: {:?}", err);
 		let _ = notify(false, &[NotifyState::Status(&msg)]);
+		error!("application failed: {}", err);
+		return ExitCode::FAILURE
 	}
-	result
+	ExitCode::SUCCESS
 }
 
 async fn real_main() -> Result<(), Box<dyn Error>> {
