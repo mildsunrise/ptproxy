@@ -214,7 +214,8 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 		PeerMode::Server => None,
 		PeerMode::Client => Some(Server::try_bind(&listener_addr)?
 			.tcp_nodelay(tcp_nodelay)
-			.http1_title_case_headers(true))
+			.http1_title_case_headers(true)
+			.http1_only(true))
 	};
 
 	// start QUIC endpoint
