@@ -389,6 +389,7 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 				if request.method() == Method::CONNECT {
 					return Ok(Response::builder()
 						.header(header::SERVER, "ptproxy client")
+						.header(header::CONTENT_TYPE, "text/plain;charset=UTF-8")
 						.status(StatusCode::METHOD_NOT_ALLOWED)
 						.body("CONNECT requests not implemented yet\n".into())
 						.unwrap());
@@ -401,6 +402,7 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 					Some(x) => x,
 					None => return Ok(Response::builder()
 						.header(header::SERVER, "ptproxy client")
+						.header(header::CONTENT_TYPE, "text/plain;charset=UTF-8")
 						.status(StatusCode::BAD_REQUEST)
 						.body("invalid Transfer-Encoding value: only chunked transfer coding supported\n".into())
 						.unwrap()),
@@ -421,6 +423,7 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 					Some(value) => value,
 					None => return Ok(Response::builder()
 						.header(header::SERVER, "ptproxy client")
+						.header(header::CONTENT_TYPE, "text/plain;charset=UTF-8")
 						.status(StatusCode::SERVICE_UNAVAILABLE)
 						.body("tunnel not established\n".into())
 						.unwrap()),
@@ -437,6 +440,7 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 					Ok(value) => value,
 					Err(err) => return Ok(Response::builder()
 						.header(header::SERVER, "ptproxy client")
+						.header(header::CONTENT_TYPE, "text/plain;charset=UTF-8")
 						.status(StatusCode::BAD_GATEWAY)
 						.body(format!("error sending request:\n{}\n", err).into())
 						.unwrap()),
@@ -454,6 +458,7 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 				if let Err(err) = proxy_request_body.await {
 					return Ok(Response::builder()
 						.header(header::SERVER, "ptproxy client")
+						.header(header::CONTENT_TYPE, "text/plain;charset=UTF-8")
 						.status(StatusCode::BAD_GATEWAY)
 						.body(format!("error when streaming request body:\n{}\n", err).into())
 						.unwrap())
@@ -464,6 +469,7 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 					Ok(value) => value,
 					Err(err) => return Ok(Response::builder()
 						.header(header::SERVER, "ptproxy client")
+						.header(header::CONTENT_TYPE, "text/plain;charset=UTF-8")
 						.status(StatusCode::BAD_GATEWAY)
 						.body(format!("error when receiving response:\n{}\n", err).into())
 						.unwrap())
@@ -580,6 +586,7 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 					let body: Bytes = format!("could not proxy request:\n{}\n", err).into();
 					stream.send_response(Response::builder()
 						.header(header::SERVER, "ptproxy server")
+						.header(header::CONTENT_TYPE, "text/plain;charset=UTF-8")
 						.header(header::CONTENT_LENGTH, body.len())
 						.status(StatusCode::BAD_GATEWAY)
 						.body(())
