@@ -87,7 +87,7 @@ ptproxy is written in Rust for:
 
 ## Usage
 
-> **⚠️ Warning:** while usable, this is still in the proof-of-concept stage, and lacks support for many minor and not-so-minor features (like WebSocket proxying, or the `X-Forwarded-For` / `Forwarded` headers). Use at your own risk.
+> **⚠️ Warning:** while usable, this is still in the proof-of-concept stage, and lacks support for many minor and not-so-minor features (like WebSocket proxying). Use at your own risk.
 
 ### Prerequisites
 
@@ -291,6 +291,18 @@ Status code will usually be 503 (if tunnel is not established at that time) or 5
 
 If the response head has already been sent (which can happen when the errors occurs while streaming the response body), the error will be logged and the HTTP/1.1 socket will be closed early to propagate the error condition.
 
+#### `Forwarded` header
+
+If the `add_forwarded` parameter is enabled, ptproxy will append an [RFC7239 compliant][forwarded-rfc] `Forwarded` header to the request before forwarding it, indicating the client's address (`for`), protocol through which the request was received (`proto`), and ptproxy's client facing address (`by`). `host` isn't currently included since the `Host` header isn't altered. Example:
+
+~~~
+Forwarded: for="127.0.0.1:35974";by="127.0.0.1:20080";proto=http
+~~~
+
+The parameter can be independently enabled in client and server, and if enabled in both sides, two headers will be appended to the request. There's usually little value in enabling it at the server.
+
+Existing `Forwarded` headers will be left intact, and a new one will be appended after these. Downstream proxies or frameworks may join the values using a comma (`,`) as permitted by HTTP, and because the comma itself is syntactically valid inside a single value (through a quoted string), a rogue client could send a malformed header with an unclosed quoted string to cause parsing for the entire set of values to fail. Origins that rely on `Forwarded` for security controls **must** be careful to reject requests with malformed values, and enforce N trailing values to be present.
+
 
 
 [rustup]: https://rustup.rs
@@ -310,3 +322,4 @@ If the response head has already been sent (which can happen when the errors occ
 [reason-phrase]: https://www.rfc-editor.org/rfc/rfc9112#name-status-line
 [interim-responses]: https://www.rfc-editor.org/rfc/rfc9110#name-informational-1xx
 [ws-over-http3]: https://www.rfc-editor.org/rfc/rfc9220
+[forwarded-rfc]: https://www.rfc-editor.org/rfc/rfc7239

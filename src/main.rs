@@ -20,6 +20,7 @@ use http::{Response, Request, HeaderName, header, HeaderMap, HeaderValue, Method
 use hyper::{
 	service::{make_service_fn, service_fn},
 	Body, Server, body::HttpBody,
+	server::conn::AddrStream,
 };
 use rand::{seq::IteratorRandom, thread_rng};
 use rustls::server::AllowAnyAuthenticatedClient;
@@ -292,6 +293,8 @@ async fn real_main() -> Result<(), AppError> {
 		endpoint
 	};
 
+	let add_forwarded = config.system.add_forwarded.unwrap_or(config::default_add_forwarded());
+
 	// start listening for shutdown and sending watchdog
 
 	let ready_sent = Arc::new(AtomicBool::new(false));
@@ -438,7 +441,7 @@ async fn real_main() -> Result<(), AppError> {
 
 	let handle_request_client = {
 		let current_connection = current_connection.clone();
-		move |mut request: Request<Body>| {
+		move |fwd: Option<HeaderValue>, mut request: Request<Body>| {
 			let current_connection = current_connection.clone();
 			async move {
 				// reject CONNECT requests
@@ -484,6 +487,11 @@ async fn real_main() -> Result<(), AppError> {
 						.body("tunnel not established\n".into())
 						.unwrap()),
 				};
+
+				// add Forwarded header
+				if let Some(fwd) = fwd {
+					request.headers_mut().append(header::FORWARDED, fwd);
+				}
 
 				// actually (attempt to) proxy the request
 				*request.version_mut() = http::Version::HTTP_3;
@@ -564,8 +572,15 @@ async fn real_main() -> Result<(), AppError> {
 	};
 
 	let listener_loop = || async {
-		let make_svc = make_service_fn(move |_conn| {
+		let make_svc = make_service_fn(move |conn: &AddrStream| {
+			let fwd: HeaderValue = format!(
+				"for={:?};by={:?};proto=http",
+				conn.remote_addr().to_string(),
+				conn.local_addr().to_string()
+			).try_into().unwrap();
+			let fwd = add_forwarded.then_some(fwd);
 			let handle_request_client = handle_request_client.clone();
+			let handle_request_client = move |req| handle_request_client(fwd.clone(), req);
 			async move {
 				Ok::<_, Infallible>(service_fn(handle_request_client))
 			}
@@ -580,7 +595,7 @@ async fn real_main() -> Result<(), AppError> {
 
 	// main body: server
 
-	let handle_request_server = |(mut request, mut stream): (Request<()>, h3::server::RequestStream<_, _>)| {
+	let handle_request_server = |fwd: Option<HeaderValue>, (mut request, mut stream): (Request<()>, h3::server::RequestStream<_, _>)| {
 		let upstream_url = upstream_url.clone().unwrap();
 		let http_client = http_client.clone();
 		async move {
@@ -605,6 +620,11 @@ async fn real_main() -> Result<(), AppError> {
 			};
 
 			// FIXME: do we need to add transfer-encoding ourselves?
+
+			// add Forwarded header
+			if let Some(fwd) = fwd {
+				request.headers_mut().append(header::FORWARDED, fwd);
+			}
 
 			// actually (attempt to) proxy the request
 			*request.version_mut() = http::Version::HTTP_11;
@@ -697,6 +717,7 @@ async fn real_main() -> Result<(), AppError> {
 
 	let handle_established_connection_server = |quinn_connection: quinn::Connection| {
 		let stop_token = &stop_token;
+		let endpoint = &endpoint;
 		async move {
 			// create HTTP/3 connection
 			let h3_connection = h3_quinn::Connection::new(quinn_connection.clone());
@@ -704,6 +725,15 @@ async fn real_main() -> Result<(), AppError> {
 				() = stop_token.cancelled() => return Ok(()),
 				value = h3::server::Connection::<_, Bytes>::new(h3_connection) => value,
 			}?;
+
+			// we explicitly set a non-typical protocol to prevent apps from treating this hop
+			// as a "normal" proxy, and because we may introduce internal extensions someday
+			let fwd: HeaderValue = format!(
+				"for={:?};by={:?};proto=http3",
+				quinn_connection.remote_address().to_string(),
+				endpoint.local_addr()?.to_string()
+			).try_into().unwrap();
+			let fwd = add_forwarded.then_some(fwd);
 
 			// accept requests while not shutdown
 			let result = loop {
@@ -731,7 +761,7 @@ async fn real_main() -> Result<(), AppError> {
 				};
 
 				// spawn a task to handle the request
-				tokio::spawn(handle_request_server(request));
+				tokio::spawn(handle_request_server(fwd.clone(), request));
 			};
 
 			// wait for outstanding requests to be processed

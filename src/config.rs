@@ -223,6 +223,10 @@ pub struct SystemConfig {
 	/// the watchdog timeout limit is divided by this factor to determine the interval at which to send them.
 	/// <br> **Default:** 1.5
 	pub watchdog_factor: Option<f32>,
+
+	/// If enabled, a `Forwarded` header will be appended to the request before forwarding it.
+	/// <br> **Default:** false
+	pub add_forwarded: Option<bool>,
 }
 
 pub fn default_connect_interval() -> u64 {
@@ -239,4 +243,8 @@ pub fn default_wait_for_first_attempt() -> bool {
 
 pub fn default_watchdog_factor() -> f32 {
 	1.5
+}
+
+pub fn default_add_forwarded() -> bool {
+	false
 }
