@@ -4,6 +4,7 @@
 use std::{
 	convert::{identity as id, Infallible},
 	error::Error,
+	fmt::{Display, Debug},
 	net::SocketAddr,
 	path::PathBuf,
 	process::ExitCode,
@@ -49,20 +50,64 @@ struct Opt {
 	pub config: PathBuf,
 }
 
+// ERROR HANDLING
+
+#[derive(Debug)]
+struct AppError {
+	task: String,
+	inner: Box<dyn Error>,
+}
+
+impl Display for AppError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "failed at {}: {}", self.task, self.inner)
+	}
+}
+
+impl Error for AppError {}
+
+fn wrap_fn<'a, F, T>(task: F) -> impl FnOnce(T) -> AppError + 'a
+where
+	F: FnOnce() -> String + 'a,
+	T: Into<Box<dyn Error>>,
+{
+	|err| AppError {
+		task: task(),
+		inner: err.into(),
+	}
+}
+
+fn wrap<'a, T>(task: &'a str) -> impl FnOnce(T) -> AppError + 'a
+where
+	T: Into<Box<dyn Error>>,
+{
+	wrap_fn(move || task.to_owned())
+}
+
+fn wrap_arg<'a, T, A>(task: &'a str, arg: &'a A) -> impl FnOnce(T) -> AppError + 'a
+where
+	T: Into<Box<dyn Error>>,
+	A: Debug,
+{
+	wrap_fn(move || format!("{} ({:?})", task, arg))
+}
+
 // we override the real main to catch application errors and report as systemd status too
 #[tokio::main]
 async fn main() -> ExitCode {
 	let result = real_main().await;
 	if let Err(err) = result {
-		let msg = format!("failed: {:?}", err);
+		let msg = format!("failed at {}: {:?}", err.task, err.inner);
 		let _ = notify(false, &[NotifyState::Status(&msg)]);
-		error!("application failed: {}", err);
+		error!("{}", err);
 		return ExitCode::FAILURE
 	}
 	ExitCode::SUCCESS
 }
 
-async fn real_main() -> Result<(), Box<dyn Error>> {
+// MAIN LOGIC
+
+async fn real_main() -> Result<(), AppError> {
 	tracing_subscriber::fmt()
 		.with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
 		.with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
@@ -73,10 +118,13 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 	// parse args, read config
 
 	let opt = Opt::from_args();
-	let config: config::Config =
-		toml::from_str(&tokio::fs::read_to_string(opt.config.clone()).await?)?;
+	let config = tokio::fs::read_to_string(opt.config.clone())
+		.await
+		.map_err(wrap_arg("reading configuration file", &opt.config))?;
+	let config: config::Config = toml::from_str(&config)
+		.map_err(wrap("parsing configuration"))?;
 	let config_base = opt.config.parent().unwrap();
-	let general = config.general;
+	let general = &config.general;
 	let connect_interval = Duration::from_millis(
 		config
 			.system
@@ -86,40 +134,36 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 
 	// load TLS certificates / keys
 
-	let roots = {
-		let mut roots = rustls::RootCertStore::empty();
-		let certs = match config.tls.ca {
-			Some(path) => crate::utils::load_certificates_from_pem(&config_base.join(path))?,
-			None => rustls_native_certs::load_native_certs()?
-				.into_iter()
-				.map(|c| rustls::Certificate(c.0))
-				.collect(),
-		};
-		for cert in certs {
-			roots.add(&cert)?;
-		}
-		roots
-	};
+	let roots = crate::utils::load_root_certs(&config, &config_base)
+		.map_err(wrap("loading root CA certificates"))?;
 
-	let cert = crate::utils::load_certificates_from_pem(&config_base.join(config.tls.cert))?;
-	let key = crate::utils::load_private_key_from_file(&config_base.join(config.tls.key))?;
+	let cert = config_base.join(config.tls.cert);
+	let cert = crate::utils::load_certificates_from_pem(&cert)
+		.map_err(wrap_arg("loading certificate", &cert))?;
+	let key = config_base.join(config.tls.key);
+	let key = crate::utils::load_private_key_from_file(&key)
+		.map_err(wrap_arg("loading certificate key", &key))?;
 
 	// prepare QUIC config
 
 	let endpoint_config = quinn::EndpointConfig::default();
 
-	let transport_config = Arc::new(crate::utils::build_transport_config(
+	let transport_config = crate::utils::build_transport_config(
 		general.mode,
 		&config.transport,
-	)?);
+	)
+		.map_err(wrap("building tranport config"))?;
+	let transport_config = Arc::new(transport_config);
 
 	let client_config = {
 		let mut tls_config = rustls::ClientConfig::builder()
 			.with_safe_default_cipher_suites()
 			.with_safe_default_kx_groups()
-			.with_protocol_versions(&[&rustls::version::TLS13])?
+			.with_protocol_versions(&[&rustls::version::TLS13])
+			.expect("invalid TLS parameters?")
 			.with_root_certificates(roots.clone())
-			.with_client_auth_cert(cert.clone(), key.clone())?;
+			.with_client_auth_cert(cert.clone(), key.clone())
+			.map_err(wrap("building client TLS config"))?;
 		tls_config.enable_early_data = true;
 		tls_config.alpn_protocols = vec![ALPN.into()];
 		tls_config.key_log = Arc::new(rustls::KeyLogFile::new());
@@ -132,14 +176,17 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 	let server_config = {
 		let cert_verifier = Arc::new(crate::utils::StrictClientCertVerifier {
 			inner: AllowAnyAuthenticatedClient::new(roots.clone()),
-			server_name: general.peer_hostname.as_str().try_into()?,
+			server_name: general.peer_hostname.as_str().try_into()
+				.map_err(wrap_arg("parsing peer hostname", &general.peer_hostname))?,
 		});
 		let mut tls_config = rustls::ServerConfig::builder()
 			.with_safe_default_cipher_suites()
 			.with_safe_default_kx_groups()
-			.with_protocol_versions(&[&rustls::version::TLS13])?
+			.with_protocol_versions(&[&rustls::version::TLS13])
+			.expect("invalid TLS parameters?")
 			.with_client_cert_verifier(cert_verifier)
-			.with_single_cert(cert.clone(), key.clone())?;
+			.with_single_cert(cert.clone(), key.clone())
+			.map_err(wrap("building server TLS config"))?;
 		tls_config.max_early_data_size = u32::MAX;
 		tls_config.alpn_protocols = vec![ALPN.into()];
 		tls_config.key_log = Arc::new(rustls::KeyLogFile::new());
@@ -170,15 +217,19 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 		},
 	);
 
-	if general.mode != PeerMode::Client && general.http_bind_address.is_some() {
-		Err("http_bind_address can only be present in client mode")?
+	'err: {
+		if general.mode != PeerMode::Client && general.http_bind_address.is_some() {
+			break 'err Err("http_bind_address can only be present in client mode")
+		}
+		if general.mode != PeerMode::Server && general.http_connect_address.is_some() {
+			break 'err Err("http_connect_address can only be present in server mode")
+		}
+		if general.mode == PeerMode::Server && general.http_connect_address.is_none() {
+			break 'err Err("http_connect_address must be present in server mode")
+		}
+		Ok(())
 	}
-	if general.mode != PeerMode::Server && general.http_connect_address.is_some() {
-		Err("http_connect_address can only be present in server mode")?
-	}
-	if general.mode == PeerMode::Server && general.http_connect_address.is_none() {
-		Err("http_connect_address must be present in server mode")?
-	}
+		.map_err(wrap("validating configuration"))?;
 
 	let listener_addr = general
 		.http_bind_address
@@ -186,13 +237,14 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 		.unwrap_or(config::default_http_bind_address());
 
 	// prepare the base upstream URL now, this way we also validate the address is valid
-	let upstream_url = match general.http_connect_address {
+	let upstream_url = match general.http_connect_address.as_ref() {
 		None => None,
 		Some(addr) => Some(Uri::builder()
 			.scheme(Scheme::HTTP)
-			.authority(addr)
+			.authority(addr.as_str())
 			.path_and_query("/") // dummy path so it accepts it
-			.build()?),
+			.build()
+			.map_err(wrap_arg("parsing connect address", addr))?),
 	};
 
 	let tcp_nodelay = config
@@ -212,7 +264,8 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 
 	let http_server = match general.mode {
 		PeerMode::Server => None,
-		PeerMode::Client => Some(Server::try_bind(&listener_addr)?
+		PeerMode::Client => Some(Server::try_bind(&listener_addr)
+			.map_err(wrap_arg("binding listener socket", &listener_addr))?
 			.tcp_nodelay(tcp_nodelay)
 			.http1_title_case_headers(true)
 			.http1_only(true))
@@ -220,8 +273,10 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 
 	// start QUIC endpoint
 
-	let socket = std::net::UdpSocket::bind(endpoint_addr)?;
-	crate::utils::configure_endpoint_socket(&socket, &config.transport)?;
+	let socket = std::net::UdpSocket::bind(endpoint_addr)
+		.map_err(wrap_arg("binding QUIC endpoint socket", &endpoint_addr))?;
+	crate::utils::configure_endpoint_socket(&socket, &config.transport)
+		.map_err(wrap("configuring QUIC endpoint socket"))?;
 
 	let endpoint = {
 		let mut endpoint = quinn::Endpoint::new(
@@ -229,7 +284,8 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 			(general.mode == PeerMode::Server).then_some(server_config),
 			socket,
 			Arc::new(quinn::TokioRuntime),
-		)?;
+		)
+			.map_err(wrap("creating QUIC endpoint"))?;
 		if general.mode == PeerMode::Client {
 			endpoint.set_default_client_config(client_config);
 		}
@@ -763,10 +819,12 @@ async fn real_main() -> Result<(), Box<dyn Error>> {
 		send_status("waiting for endpoint to finish", false);
 		endpoint.wait_idle().await;
 
-		Ok(())
+		Ok::<_, Box<dyn Error>>(())
 	};
 
-	with_background(main_loop, watchdog_loop).await
+	with_background(main_loop, watchdog_loop)
+		.await
+		.map_err(wrap("main loop"))
 }
 
 // header manipulation

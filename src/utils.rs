@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration, path::Path, error::Error, pin::Pin, future::Future};
 
 use futures::{future::poll_fn, Stream};
+use rustls::RootCertStore;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
@@ -78,6 +79,21 @@ pub fn load_private_key_from_file(path: &Path) -> Result<rustls::PrivateKey, Box
 		1 => Ok(rustls::PrivateKey(keys.remove(0))),
 		_ => Err("More than one PKCS8-encoded private key found".into()),
 	}
+}
+
+pub fn load_root_certs(config: &config::Config, config_base: &Path) -> Result<RootCertStore, Box<dyn Error>> {
+	let mut roots = rustls::RootCertStore::empty();
+	let certs = match config.tls.ca.as_ref() {
+		Some(path) => crate::utils::load_certificates_from_pem(&config_base.join(path))?,
+		None => rustls_native_certs::load_native_certs()?
+			.into_iter()
+			.map(|c| rustls::Certificate(c.0))
+			.collect(),
+	};
+	for cert in certs {
+		roots.add(&cert)?;
+	}
+	Ok(roots)
 }
 
 // Conversion of our config into quinn
