@@ -179,7 +179,7 @@ In general it is best to keep the transport parameters consistent on both sides.
 
 It's highly recommended to use a stress-testing tool like [ab][] to get a feel of the tunnel's performance. While you might expect the latency to equal 1 RTT once properly configured, it will likely be more due to *packet pacing*, a layer that aims to reduce data bursts to prevent data loss. It shapes the traffic to conform to the bandwidth determined by the congestion control window.
 
-Since congestion control has no way to distinguish random packet loss from one caused by congestion, it tends to overreact and reduce the congestion window (sometimes well before the initial setting) in lossy links, compromising throughput and latency. ptproxy uses [BBR congestion control][bbr] by default, a modern algorithm that improves substantially in this area.
+Since congestion control has no way to distinguish random packet loss from one caused by congestion, it tends to overreact and reduce the congestion window (sometimes well before the initial setting) in lossy links, compromising throughput and latency. ptproxy uses [BBR congestion control][bbr] by default, a modern algorithm that improves substantially in this area. Nevertheless, for lossy links with guaranteed bandwidth, CC can be disabled entirely by setting [`congestion_algorithm`][cc-alg-option] to `"None"` (note that this doesn't disable packet pacing, which still shapes traffic according to `initial_window`).
 
 Lastly, [flow control][flow-control] is a separate layer that governs the size of RX / TX buffers at the endpoints, limiting throughput as well in the process. ptproxy makes connection-wide flow control limits (`receive_window`, `send_window`) default to `initial_window`, but there's a per-stream limit as well: `stream_receive_window`. It has a generous default (1MB) but you may want to adjust it to prevent individual requests from monopolizing the link too much, or to prevent extra latency if your requests / responses are bigger than that.
 
@@ -324,3 +324,4 @@ Existing `Forwarded` headers will be left intact, and a new one will be appended
 [bdp]: https://en.wikipedia.org/wiki/Bandwidth-delay_product
 [bbr]: https://www.ietf.org/archive/id/draft-cardwell-iccrg-bbr-congestion-control-02.html
 [flow-control]: https://www.rfc-editor.org/rfc/rfc9000.html#name-flow-control
+[cc-alg-option]: https://ptproxy.alba.sh/ptproxy/config/struct.TransportConfig.html#structfield.congestion_algorithm

@@ -173,6 +173,9 @@ pub enum CongestionAlgorithm {
 	Cubic,
 	/// See [`quinn::congestion::NewReno`].
 	NewReno,
+	/// A dummy congestion controller that performs no action on outgoing packets.
+	/// Note that the congestion window is still used for packet pacing.
+	None,
 }
 
 impl Default for CongestionAlgorithm {

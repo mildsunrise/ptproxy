@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration, path::Path, error::Error, pin::Pin, future::Future};
+use std::{sync::Arc, time::{Duration, Instant}, path::Path, error::Error, pin::Pin, future::Future};
 
 use futures::{future::poll_fn, Stream};
 use rustls::RootCertStore;
@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::config;
+
 
 // async utils
 
@@ -34,6 +35,7 @@ pub async fn cancellable<F: Future>(a: F, token: &CancellationToken) -> Option<F
 		() = token.cancelled() => None,
 	}
 }
+
 
 // TLS stuff
 
@@ -96,7 +98,8 @@ pub fn load_root_certs(config: &config::Config, config_base: &Path) -> Result<Ro
 	Ok(roots)
 }
 
-// Conversion of our config into quinn
+
+// conversion of our config into quinn
 
 pub fn build_transport_config(
 	mode: config::PeerMode,
@@ -160,6 +163,9 @@ fn set_congestion_controller(
 		config::CongestionAlgorithm::NewReno => target.congestion_controller_factory(Arc::new(
 			quinn::congestion::NewRenoConfig::default().initial_window(initial_window).clone(),
 		)),
+		config::CongestionAlgorithm::None => target.congestion_controller_factory(
+			DummyControllerConfig { initial_window }
+		),
 	};
 }
 
@@ -186,4 +192,51 @@ pub fn configure_endpoint_socket(
 	}
 
 	Ok(())
+}
+
+
+// dummy congestion controller
+
+#[derive(Debug, Clone)]
+struct DummyController {
+	window: u64,
+}
+
+impl quinn::congestion::Controller for DummyController {
+	fn clone_box(&self) -> Box<dyn quinn::congestion::Controller> {
+		Box::new(self.clone())
+	}
+
+	fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+		self
+	}
+
+	fn window(&self) -> u64 {
+		self.window
+	}
+
+	fn initial_window(&self) -> u64 {
+		self.window
+	}
+
+	fn on_congestion_event(
+		&mut self,
+		_now: Instant,
+		_sent: Instant,
+		_is_persistent_congestion: bool,
+		_lost_bytes: u64,
+	) {}
+
+	fn on_mtu_update(&mut self, _new_mtu: u16) {}
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DummyControllerConfig {
+	initial_window: u64,
+}
+
+impl quinn::congestion::ControllerFactory for DummyControllerConfig {
+	fn build(&self, _now: Instant, _current_mtu: u16) -> Box<dyn quinn::congestion::Controller> {
+		Box::new(DummyController { window: self.initial_window })
+	}
 }
