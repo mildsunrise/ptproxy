@@ -177,7 +177,7 @@ pub enum CongestionAlgorithm {
 
 impl Default for CongestionAlgorithm {
 	fn default() -> Self {
-		CongestionAlgorithm::Cubic
+		CongestionAlgorithm::Bbr
 	}
 }
 

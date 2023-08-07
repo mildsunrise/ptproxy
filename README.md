@@ -165,13 +165,7 @@ This means both instances have successfully established an HTTP/3 session. Try s
 
 Once the tunnel is working, the next step is usually to tune some of the parameters in the [`[transport]` section][transport-config-docs] of the configuration file to meet your needs. Like TCP, QUIC's [congestion control][] has very conservative defaults. But since this session goes over a known link, we can relax some of them to provide better throughput / latency without the need for the session to warm up.
 
-In particular, you may want to specify the *round-trip time* of the link and the *initial congestion window*, which you can derive using:
-
-$$
-    \text{cwnd} = \text{guaranteed bandwidth (B/sec)} \times {\text{rtt (sec)}}
-$$
-
-For a 150ms link assumed to provide 30mbps, this means adding the following to the config file:
+In particular, you may want to specify the *round-trip time* of the link and the *initial congestion window*. The congestion window should ideally be set to the link's [bandwidth delay product (BDP)][bdp]. For example, for a 150ms link assumed to provide 30mbps:
 
 ~~~ toml
 [transport]
@@ -184,6 +178,10 @@ initial_window = 487500
 In general it is best to keep the transport parameters consistent on both sides.
 
 It's highly recommended to use a stress-testing tool like [ab][] to get a feel of the tunnel's performance. While you might expect the latency to equal 1 RTT once properly configured, it will likely be more due to *packet pacing*, a layer that aims to reduce data bursts to prevent data loss. It shapes the traffic to conform to the bandwidth determined by the congestion control window.
+
+Since congestion control has no way to distinguish random packet loss from one caused by congestion, it tends to overreact and reduce the congestion window (sometimes well before the initial setting) in lossy links, compromising throughput and latency. ptproxy uses [BBR congestion control][bbr] by default, a modern algorithm that improves substantially in this area.
+
+Lastly, [flow control][flow-control] is a separate layer that governs the size of RX / TX buffers at the endpoints, limiting throughput as well in the process. ptproxy makes connection-wide flow control limits (`receive_window`, `send_window`) default to `initial_window`, but there's a per-stream limit as well: `stream_receive_window`. It has a generous default (1MB) but you may want to adjust it to prevent individual requests from monopolizing the link too much, or to prevent extra latency if your requests / responses are bigger than that.
 
 ### systemd service
 
@@ -323,3 +321,6 @@ Existing `Forwarded` headers will be left intact, and a new one will be appended
 [interim-responses]: https://www.rfc-editor.org/rfc/rfc9110#name-informational-1xx
 [ws-over-http3]: https://www.rfc-editor.org/rfc/rfc9220
 [forwarded-rfc]: https://www.rfc-editor.org/rfc/rfc7239
+[bdp]: https://en.wikipedia.org/wiki/Bandwidth-delay_product
+[bbr]: https://www.ietf.org/archive/id/draft-cardwell-iccrg-bbr-congestion-control-02.html
+[flow-control]: https://www.rfc-editor.org/rfc/rfc9000.html#name-flow-control
