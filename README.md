@@ -285,7 +285,7 @@ The message body is currently streamed chunk-by-chunk without further buffering,
 
 If ptproxy encounters an error when proxying the request, and the response hasn't yet been sent, a synthetic response will be generated with `Server: ptproxy client` or `Server: ptproxy server` (depending on where the error originated) containing the error message as body.
 
-Status code will usually be 503 (if tunnel is not established at that time) or 502 (if request proxying was attempted but failed for some other reason, or origin response was rejected), but can be 400 or other 4xx in case the request was rejected because of invalid or unsupported data in the request.
+Status code will usually be 503 (if tunnel is not established at that time) or 502 (if request proxying was attempted but failed for some other reason, or origin response was rejected), but can be 400 or other 4xx in case the request was rejected because of invalid or unsupported data in the request (see above).
 
 If the response head has already been sent (which can happen when the errors occurs while streaming the response body), the error will be logged and the HTTP/1.1 socket will be closed early to propagate the error condition.
 
@@ -299,7 +299,7 @@ Forwarded: for="127.0.0.1:35974";by="127.0.0.1:20080";proto=http
 
 The parameter can be independently enabled in client and server, and if enabled in both sides, two headers will be appended to the request. There's usually little value in enabling it at the server.
 
-Existing `Forwarded` headers will be left intact, and a new one will be appended after these. Downstream proxies or frameworks may join the values using a comma (`,`) as permitted by HTTP, and because the comma itself is syntactically valid inside a single value (through a quoted string), a rogue client could send a malformed header with an unclosed quoted string to cause parsing for the entire set of values to fail. Origins that rely on `Forwarded` for security controls **must** be careful to reject requests with malformed values, and enforce N trailing values to be present.
+**Note on security:** All ptproxy does is append a `Forwarded` header after existing ones (if any) which are left intact. Downstream parsers may join the values using a comma (`,`) as permitted by HTTP, and because the comma itself is syntactically valid inside a single value (through a quoted string), a rogue client could send a malformed header with an unclosed quoted string to cause parsing for the entire set of values to fail. Origins that rely on `Forwarded` for security controls **must** be careful to reject requests with malformed values, and enforce N trailing values to be present.
 
 
 
