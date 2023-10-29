@@ -185,8 +185,7 @@ Lastly, [flow control][flow-control] is a separate layer that governs the size o
 
 ### systemd service
 
-To deploy this as a systemd service, it's recommended to use the [service template feature][systemd-service-templates] to allow for multiple tunnels to be managed easily.
-Create `/usr/lib/systemd/system/ptproxy@.service` with the following contents:
+The following code snippet, to be placed at `/usr/lib/systemd/system/ptproxy@.service`, shows the recommended way to deploy ptproxy as a systemd service. It uses the [service template feature][systemd-service-templates] to allow for multiple tunnels to be managed easily:
 
 ~~~ ini
 [Unit]
